@@ -1,2 +1,6 @@
 __pycache__/
 .env
+*.pt
+*.pth
+*.onnx
+!weights/.gitkeep

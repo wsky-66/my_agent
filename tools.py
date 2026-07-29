@@ -128,6 +128,67 @@ def _parse_param_doc(doc: str, param_name: str) -> str:
 registry = ToolRegistry()
 
 
+# ---- YOLO-World 工具 ----
+
+_YOLO_PYTHON = "/home/wsky/miniconda3/envs/yoloworld/bin/python"
+_YOLO_MODEL_PATH = "/home/wsky/yolo/yolov8s-world.pt"
+
+
+@registry.register(
+    name="detect_objects",
+    description="使用 YOLO-World 检测图片中的目标物体。适合图片分析、物体识别、目标检测等任务。"
+)
+def detect_objects(image_path: str, classes: list) -> str:
+    """
+    使用 YOLO-World 检测图片中的指定类别物体。\n\n    :param image_path: 图片的绝对路径
+    :param classes: 要检测的目标类别列表，例如 ["person", "car", "dog"]
+    """
+    try:
+        script = f"""
+from ultralytics import YOLOWorld
+model = YOLOWorld({_YOLO_MODEL_PATH!r})
+model.set_classes({classes!r})
+results = model({image_path!r})
+boxes = results[0].boxes
+if boxes is None or len(boxes) == 0:
+    print("EMPTY")
+else:
+    for box in boxes:
+        cls_id = int(box.cls[0])
+        conf = float(box.conf[0])
+        xyxy = box.xyxy[0].tolist()
+        label = {classes!r}[cls_id] if cls_id < len({classes!r}) else f"class_{{cls_id}}"
+        print(f"{{label}}|{{conf:.4f}}|{{xyxy[0]:.0f}}|{{xyxy[1]:.0f}}|{{xyxy[2]:.0f}}|{{xyxy[3]:.0f}}")
+"""
+        result = subprocess.run(
+            [_YOLO_PYTHON, "-c", script],
+            capture_output=True, text=True, timeout=config.SHELL_TIMEOUT + 120,
+            cwd="/home/wsky/yolo",
+        )
+        output = result.stdout.strip()
+        if result.stderr.strip():
+            output += "\n[stderr]\n" + result.stderr.strip()
+
+        if not output or output == "EMPTY":
+            return f"在 {image_path} 中未检测到任何 {classes} 类别物体。"
+
+        lines = [f"检测结果 ({image_path}):"]
+        for line in output.strip().split("\n"):
+            if not line or line == "EMPTY":
+                continue
+            parts = line.split("|", 5)
+            if len(parts) == 6:
+                label, conf, x1, y1, x2, y2 = parts
+                lines.append(
+                    f"  - {label}: 置信度={float(conf):.2f}, 坐标=[{x1}, {y1}, {x2}, {y2}]"
+                )
+            else:
+                lines.append(f"  {line}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"YOLO-World 检测出错: {e}"
+
+
 # ---- 内置 Shell 工具 ----
 
 @registry.register(name="run_shell", description="执行一条 Shell 命令并返回输出。可用于文件操作、系统信息查询、运行脚本等。")

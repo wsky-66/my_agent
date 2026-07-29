@@ -3,6 +3,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+for _key in ("ALL_PROXY", "all_proxy"):
+    _val = os.environ.get(_key, "")
+    if _val.startswith("socks"):
+        os.environ.pop(_key, None)
+
 
 class Config:
     API_KEY: str = os.getenv("LLM_API_KEY", "")

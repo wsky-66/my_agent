@@ -1,0 +1,23 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+class Config:
+    API_KEY: str = os.getenv("LLM_API_KEY", "")
+    BASE_URL: str = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
+    MODEL: str = os.getenv("LLM_MODEL", "gpt-4o")
+    MAX_TOOL_ROUNDS: int = int(os.getenv("LLM_MAX_TOOL_ROUNDS", "10"))
+    SHELL_TIMEOUT: int = int(os.getenv("SHELL_TIMEOUT", "30"))
+
+    @classmethod
+    def validate(cls):
+        if not cls.API_KEY:
+            raise ValueError(
+                "LLM_API_KEY 未设置。请在 .env 文件中配置或设置环境变量。\n"
+                "  cp .env.example .env  # 然后编辑 .env 填入你的 API Key"
+            )
+
+
+config = Config()

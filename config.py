@@ -13,8 +13,12 @@ class Config:
     API_KEY: str = os.getenv("LLM_API_KEY", "")
     BASE_URL: str = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
     MODEL: str = os.getenv("LLM_MODEL", "gpt-4o")
-    MAX_TOOL_ROUNDS: int = int(os.getenv("LLM_MAX_TOOL_ROUNDS", "10"))
+    MAX_TOOL_ROUNDS: int = int(os.getenv("LLM_MAX_TOOL_ROUNDS", "25"))
     SHELL_TIMEOUT: int = int(os.getenv("SHELL_TIMEOUT", "30"))
+
+    # DDS 算法平台（Grounding DINO 开放集检测）
+    DDS_API_TOKEN: str = os.getenv("DDS_API_TOKEN", "")
+    DDS_BASE_URL: str = os.getenv("DDS_BASE_URL", "https://api.deepdataspace.com")
 
     @classmethod
     def validate(cls):

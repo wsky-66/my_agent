@@ -1,6 +1,24 @@
+# Python
 __pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 环境与密钥
 .env
+
+# 模型权重
 *.pt
 *.pth
 *.onnx
 !weights/.gitkeep
+
+# 日志
+logs/
+*.log
+
+# 临时草稿 / 测试产物
+scratch/
+frames/
+test/vis_*.png
+vis_*.png

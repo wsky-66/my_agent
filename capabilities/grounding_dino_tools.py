@@ -30,10 +30,8 @@ def _image_to_base64_data(image_path: str) -> str:
     return f"data:{mime};base64,{b64}"
 
 
-def _format_result(data: dict) -> str:
-    """把 API 返回的 objects 转为可读文本。"""
-    result = data.get("result", {})
-    objects = result.get("objects") or []
+def _format_objects(objects: list) -> str:
+    """把检测 objects 列表转为可读文本。"""
     if not objects:
         return "未检测到任何目标物体。"
     lines = [f"检测到 {len(objects)} 个目标："]
@@ -49,35 +47,33 @@ def _format_result(data: dict) -> str:
     return "\n".join(lines)
 
 
-@registry.register(
-    name="detect_grounding",
-    description="用 Grounding DINO 开放集检测模型，按文本提示在图像/相机画面中定位物体，"
-               "返回检测框 bbox、类别与置信度。prompt 用英文单词、多个类别以 '.' 分隔（如 "
-               "'cat.dog.person'）。可选传 image_path 检测指定图片；不传则抓取相机当前画面。"
-               "适合按任意文本找物体，比预置类别灵活。",
-)
-def detect_grounding(prompt: str, image_path: str = None,
-                     camera_take: bool = True,
-                     model: str = _DEFAULT_MODEL,
-                     bbox_threshold: float = 0.25,
-                     iou_threshold: float = 0.8) -> str:
+def run_detection(prompt: str, image_path: str = None,
+                  camera_take: bool = True,
+                  model: str = _DEFAULT_MODEL,
+                  bbox_threshold: float = 0.25,
+                  iou_threshold: float = 0.8):
+    """执行 Grounding DINO 检测，返回 (objects, err)。
+
+    objects 为 [{'category','score','bbox'}]，err 为错误文本（成功时为 None）。
+    供 detect_grounding 工具与 scan_objects 编排共用。
+    """
     if not config.DDS_API_TOKEN:
-        return "错误：未配置 DDS_API_TOKEN（请在 .env 中设置 DDS 平台 Token）"
+        return None, "错误：未配置 DDS_API_TOKEN（请在 .env 中设置 DDS 平台 Token）"
 
     image = None
     if image_path and os.path.isfile(image_path):
         image = _image_to_base64_data(image_path)
     elif camera_take:
         if not camera.ready():
-            return "相机未运行或无彩色话题，请先 start_camera 再检测，或传 image_path 指定图片"
+            return None, "相机未运行或无彩色话题，请先 start_camera 再检测，或传 image_path 指定图片"
         from .camera_tools import _grab_frame
         frame = _grab_frame()
         if frame is None or not os.path.isfile(frame):
-            return "相机抓帧失败，请传 image_path 指定图片"
+            return None, "相机抓帧失败，请传 image_path 指定图片"
         image = _image_to_base64_data(frame)
 
     if not image:
-        return "未找到图片：请传有效的 image_path，或先 start_camera"
+        return None, "未找到图片：请传有效的 image_path，或先 start_camera"
 
     body = {
         "model": model,
@@ -93,16 +89,16 @@ def detect_grounding(prompt: str, image_path: str = None,
         resp = requests.post(_CREATE, json=body, headers=headers, timeout=_TIMEOUT)
         data = resp.json()
     except requests.RequestException as e:
-        return f"检测请求出错: {e}"
+        return None, f"检测请求出错: {e}"
     except json.JSONDecodeError:
-        return f"检测返回非 JSON: {resp.text[:200]}"
+        return None, f"检测返回非 JSON: {resp.text[:200]}"
 
     if data.get("code") != 0:
-        return f"创建任务失败: {data.get('code')} {data.get('msg')}"
+        return None, f"创建任务失败: {data.get('code')} {data.get('msg')}"
 
     task_uuid = (data.get("data") or {}).get("task_uuid")
     if not task_uuid:
-        return f"创建任务未返回 task_uuid: {data}"
+        return None, f"创建任务未返回 task_uuid: {data}"
 
     deadline = time.time() + _POLL_SECONDS
     while time.time() < deadline:
@@ -112,18 +108,38 @@ def detect_grounding(prompt: str, image_path: str = None,
                                 headers=headers, timeout=_TIMEOUT)
             pdata = poll.json()
         except requests.RequestException as e:
-            return f"查询任务出错: {e}"
+            return None, f"查询任务出错: {e}"
         except json.JSONDecodeError:
             continue
 
         if pdata.get("code") != 0:
-            return f"查询任务失败: {pdata.get('code')} {pdata.get('msg')}"
+            return None, f"查询任务失败: {pdata.get('code')} {pdata.get('msg')}"
 
         pdata = pdata.get("data") or {}
         status = pdata.get("status")
         if status == "success":
-            return _format_result(pdata)
+            objects = (pdata.get("result") or {}).get("objects") or []
+            return objects, None
         if status == "failed":
-            return f"任务失败: {pdata.get('error')}"
+            return None, f"任务失败: {pdata.get('error')}"
 
-    return f"检测任务超时（>{_POLL_SECONDS}s）"
+    return None, f"检测任务超时（>{_POLL_SECONDS}s）"
+
+
+@registry.register(
+    name="detect_grounding",
+    description="用 Grounding DINO 开放集检测模型，按文本提示在图像/相机画面中定位物体，"
+               "返回检测框 bbox、类别与置信度。prompt 用英文单词、多个类别以 '.' 分隔（如 "
+               "'cat.dog.person'）。可选传 image_path 检测指定图片；不传则抓取相机当前画面。"
+               "适合按任意文本找物体，比预置类别灵活。",
+)
+def detect_grounding(prompt: str, image_path: str = None,
+                     camera_take: bool = True,
+                     model: str = _DEFAULT_MODEL,
+                     bbox_threshold: float = 0.25,
+                     iou_threshold: float = 0.8) -> str:
+    objects, err = run_detection(prompt, image_path, camera_take, model,
+                                 bbox_threshold, iou_threshold)
+    if err:
+        return err
+    return _format_objects(objects)

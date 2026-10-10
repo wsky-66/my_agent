@@ -98,20 +98,19 @@ print("RESULT:"+json.dumps({"ok":True,
 '''
 
 
-@registry.register(
-    name="object_position",
-    description="把 SAM 分割出的物体定位到 base_link 系：结合相机内参、外参标定、对齐深度，"
-               "反投影得到物体中心的 (x,y,z) 米及尺寸。传 center 像素(来自 segment_mask 的中心像素)"
-               "或 mask_path(直接用分割 mask)。返回 base_link 系坐标，适合接着 move_arm 抓取。",
-)
-def object_position(px: int = None, py: int = None, mask_path: str = None,
-                    radius: int = 12) -> str:
+def object_position_raw(px: int = None, py: int = None, mask_path: str = None,
+                        radius: int = 12):
+    """把物体反投影到 base_link 系，返回 (dict, err)。
+
+    dict 含 x/y/z(米)、size、npix；失败时 err 为原因文本。
+    供 object_position 工具与 scan_objects 编排共用。
+    """
     if not camera.ready():
-        return "相机未运行或无彩色话题，请先 start_camera 再定位"
+        return None, "相机未运行或无彩色话题，请先 start_camera 再定位"
     uses_center = px is not None and py is not None
     if not uses_center:
         if not mask_path or not os.path.isfile(mask_path):
-            return "失败: 请传入中心像素 (px, py) 或有效的 mask_path"
+            return None, "失败: 请传入中心像素 (px, py) 或有效的 mask_path"
         px = py = 0   # 占位, 用 mask
     else:
         # SAM 中心像素是小数, 兼容字符串/小数, 取整到像素
@@ -119,9 +118,9 @@ def object_position(px: int = None, py: int = None, mask_path: str = None,
             px = int(float(px))
             py = int(float(py))
         except (TypeError, ValueError):
-            return "失败: px/py 必须是数字(中心像素, 可为小数)"
+            return None, "失败: px/py 必须是数字(中心像素, 可为小数)"
     if mask_path and not os.path.isfile(mask_path):
-        return f"mask 文件不存在: {mask_path}"
+        return None, f"mask 文件不存在: {mask_path}"
     try:
         radius = max(8, min(int(float(radius)), 40))
     except (TypeError, ValueError):
@@ -130,11 +129,25 @@ def object_position(px: int = None, py: int = None, mask_path: str = None,
     try:
         d = _run(body)
     except subprocess.TimeoutExpired:
-        return "定位超时（>30s），相机/深度可能异常"
+        return None, "定位超时（>30s），相机/深度可能异常"
     except Exception as e:
-        return f"定位出错: {e}"
+        return None, f"定位出错: {e}"
     if not d.get("ok"):
-        return f"定位失败: {d.get('msg', '未知原因')}"
+        return None, f"定位失败: {d.get('msg', '未知原因')}"
+    return d, None
+
+
+@registry.register(
+    name="object_position",
+    description="把 SAM 分割出的物体定位到 base_link 系：结合相机内参、外参标定、对齐深度，"
+               "反投影得到物体中心的 (x,y,z) 米及尺寸。传 center 像素(来自 segment_mask 的中心像素)"
+               "或 mask_path(直接用分割 mask)。返回 base_link 系坐标，适合接着 move_arm 抓取。",
+)
+def object_position(px: int = None, py: int = None, mask_path: str = None,
+                    radius: int = 12) -> str:
+    d, err = object_position_raw(px, py, mask_path, radius)
+    if err:
+        return err
     sz = d.get("size")
     line = (f"物体相对 base_link 坐标: x={d['x']}m, y={d['y']}m, z={d['z']}m"
             + (f"\n尺寸(长宽高)≈{sz[0]}×{sz[1]}×{sz[2]}m" if sz else "")

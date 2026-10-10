@@ -105,16 +105,51 @@ def sam2_status() -> str:
     return sam2_svc.status()
 
 
+def segment_object(pos_points: list = None, neg_points: list = None,
+                   box: list = None, image_path: str = None,
+                   out: str = None, dilate_cm: float = None):
+    """执行一次 SAM2 分割，返回 (result_dict, err)。
+
+    result_dict 含 mask_path/center/bbox/coverage/area/score；失败时 err 为原因文本。
+    供 segment_mask 工具与 scan_objects 编排共用，保证 per-object mask 路径可控。
+    """
+    dc = _DILATE_CM
+
+    img = image_path
+    if not img:
+        if not camera.ready():
+            return None, "相机未运行或无彩色话题，请先 start_camera 或传入 image_path"
+        img = _grab_frame()
+        if not img:
+            return None, "相机未运行或无彩色话题，请先 start_camera 或传入 image_path"
+    elif not os.path.isfile(img):
+        return None, f"图片文件不存在: {img}"
+
+    req = {
+        "image_path": img,
+        "points": pos_points,
+        "neg_points": neg_points,
+        "box": box,
+        "dilate_cm": dc,
+        "out": out or _WORKSPACE_MASK,
+    }
+    result = sam2_svc.run(req)
+    if not result.get("ok"):
+        return None, result.get("msg", "未知原因")
+    return result, None
+
+
 @registry.register(
     name="segment_mask",
     description="圈定抓取工作区并生成二值 workspace mask，供 detect_grasp(use_mask=True) 限定抓取范围。"
                "分割注入优先级：①box 像素框(有框直接用，最高优先，可由 detect_grounding 得到) ②弹窗(有显示时人左键点目标、右键点背景、Enter 保存) ③points 像素点。"
                "默认抓当前相机帧；image_path 可指定已保存的图片，此时 box/points 必须与该图同坐标系。"
+               "out 可指定 mask 保存路径(多物体预扫时每个物体存不同文件)；不传则写当前工作区。"
                "适合抓取前先圈出物体所在区域；用 detect_grounding 得目标 bbox 后传 box 即可免人工点击。",
 )
 def segment_mask(pos_points: list = None, neg_points: list = None,
                  box: list = None, image_path: str = None,
-                 dilate_cm: float = None) -> str:
+                 dilate_cm: float = None, out: str = None) -> str:
     """
     用 SAM2 圈定抓取工作区。默认弹窗由鼠标点击注入分割信息。
 
@@ -123,32 +158,14 @@ def segment_mask(pos_points: list = None, neg_points: list = None,
     :param box: (优先)像素框 [x1,y1,x2,y2]，有框即用它分割，免弹窗；可由 detect_grounding 的 bbox 注入
     :param image_path: 图片路径，不传则抓当前相机帧
     :param dilate_cm: mask 向外膨胀的物理距离(cm)，固定为 1.0，忽略外部传入
+    :param out: mask 保存路径，不传则写默认当前工作区 current_workspace.png
     """
     dc = _DILATE_CM
+    result, err = segment_object(pos_points, neg_points, box, image_path, out, dilate_cm)
+    if err:
+        return err
 
-    img = image_path
-    if not img:
-        if not camera.ready():
-            return "相机未运行或无彩色话题，请先 start_camera 或传入 image_path"
-        img = _grab_frame()
-        if not img:
-            return "相机未运行或无彩色话题，请先 start_camera 或传入 image_path"
-    elif not os.path.isfile(img):
-        return f"图片文件不存在: {img}"
-
-    req = {
-        "image_path": img,
-        "points": pos_points,
-        "neg_points": neg_points,
-        "box": box,
-        "dilate_cm": dc,
-        "out": _WORKSPACE_MASK,
-    }
-    result = sam2_svc.run(req)
-    if not result.get("ok"):
-        return result.get("msg", "未知原因")
-
-    path = result.get("mask_path", _WORKSPACE_MASK)
+    path = result.get("mask_path", out or _WORKSPACE_MASK)
     lines = [f"工作区 mask 已生成: {path}",
              f"覆盖画面 {result.get('coverage', 0)}%（已膨胀 {dc}cm）"]
     if result.get("score") is not None:

@@ -49,6 +49,25 @@ def _fmt(result: dict, ok_msg: str) -> str:
     return ok_msg if result.get("ok") else f"失败: {msg or '未知错误'}"
 
 
+_MOVE_HINTS = (
+    ("Planning EE pose was not successful",
+     "（该目标位姿 MoveIt 规划失败，通常是 IK 无解/不可达，不是服务问题；不要对同一目标反复重试，"
+     "更不要臆造新坐标，可换位置或朝向，或如实告知用户该位姿不可达）"),
+    ("MoveIt 规划失败",
+     "（规划失败：先 robot_status，服务未就绪再 stop_robot→start_robot，就绪后重试一次）"),
+    ("moveit_plan 服务不可用",
+     "（MoveIt 服务未就绪：先 robot_status，再 stop_robot→start_robot，就绪后重试一次）"),
+)
+
+
+def _move_fail_hint(msg: str) -> str:
+    """给 move_arm 的常见失败补一句可读提示，避免模型盲目重试或臆造坐标。"""
+    for key, hint in _MOVE_HINTS:
+        if key in (msg or ""):
+            return hint
+    return ""
+
+
 def _f(value, name: str):
     """把参数强转为 float，失败返回带说明的字符串（由调用方判断类型）。"""
     try:
@@ -79,6 +98,7 @@ def move_arm(x: float, y: float, z: float,
 
     roll, pitch, yaw = (ori["roll"], ori["pitch"], ori["yaw"])
     body = f"""
+import time
 from moveit_client import MoveItClient
 try:
     arm = MoveItClient()
@@ -86,11 +106,27 @@ except Exception as e:
     print("RESULT:" + json.dumps({{"ok": False, "msg": str(e)}})); raise SystemExit
 try:
     ok, msg = arm.move_to({x}, {y}, {z}, roll={roll!r}, pitch={pitch!r}, yaw={yaw!r})
-    print("RESULT:" + json.dumps({{"ok": bool(ok), "msg": msg}}))
+    actual = None
+    if ok:
+        time.sleep(0.3)
+        p = arm.get_current_ee_pose()
+        if p is not None:
+            actual = [round(p.position.x, 3), round(p.position.y, 3), round(p.position.z, 3)]
+    print("RESULT:" + json.dumps({{"ok": bool(ok), "msg": msg, "actual": actual}}))
 finally:
     arm.shutdown()
 """
     d = _run(body)
+    if not d.get("ok"):
+        return _fmt(d, "") + _move_fail_hint(d.get("msg", ""))
+    actual = d.get("actual")
+    if actual:
+        dev = max(abs(actual[0] - x), abs(actual[1] - y), abs(actual[2] - z))
+        if dev > 0.07:
+            return (f"警告: 控制器报告移动成功，但实际末端在 "
+                    f"({actual[0]:.3f}, {actual[1]:.3f}, {actual[2]:.3f})m，与目标 "
+                    f"({x:.3f}, {y:.3f}, {z:.3f})m 偏差 {dev:.3f}m，并未真正到达"
+                    f"（可能被碰撞或关节限位截断）。不要当作已到位，请检查后重试或调整目标。")
     return _fmt(d, f"移动成功，末端已到 ({x}m, {y}m, {z}m)")
 
 

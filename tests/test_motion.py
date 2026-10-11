@@ -34,7 +34,6 @@ class Backend:
         self.events = []
         self.path = None
         self.current = None
-        self.actual = None
 
     def limits(self):
         return limits()
@@ -56,15 +55,14 @@ class Backend:
         self.events.append("execute")
 
     def verify(self, *args):
-        self.events.append("verify")
-        return self.actual or self.target
+        pytest.fail("controller success must not trigger an arrival check")
 
 
-def test_pose_is_planned_and_verified_before_reporting_success():
+def test_pose_is_planned_before_controller_completion_is_reported():
     backend, events = Backend(), []
     result = move_pose(backend, [0.3, 0., .2], [0., 50., 0.], MotionPolicy(), events.append)
     assert result.ok
-    assert backend.events == ["joints", "ik", "plan", "joints", "execute", "verify"]
+    assert backend.events == ["joints", "ik", "plan", "joints", "execute"]
     assert result.data["target"] == backend.target
     assert [e["stage"] for e in events] == ["start", "ik_selected", "planned", "completed"]
 
@@ -188,11 +186,18 @@ def test_execution_failure_never_retries_or_claims_success():
     assert backend.events.count("execute") == 1 and "verify" not in backend.events
 
 
-def test_successful_action_still_requires_actual_joint_confirmation():
+@pytest.mark.parametrize("move", [move_pose, move_cartesian])
+def test_controller_success_does_not_wait_for_new_joint_feedback(move):
     backend = Backend()
-    backend.actual = joints(.1)
-    result = move_pose(backend, [.3,0,.2], [0,50,0], MotionPolicy())
-    assert result.error_code == "MOTION_NOT_CONFIRMED"
+    backend.cartesian_plan = lambda *args: trajectory(backend.start, backend.target)
+    def execute(*args):
+        backend.events.append("execute")
+        backend.joints = lambda: pytest.fail("no feedback read after controller completion")
+    backend.execute = execute
+    result = move(backend, [.3,0,.2], [0,50,0], MotionPolicy())
+    assert result.ok and result.data["controller_completed"] is True
+    assert "actual" not in result.data
+    assert backend.events.count("execute") == 1
 
 
 @pytest.mark.parametrize("change", [dict(mode="ext_position"), dict(joint_upper_limits=[]),
@@ -229,12 +234,32 @@ def test_pose_rejection_does_not_fall_back_to_legacy_joint_execution(monkeypatch
     assert backend("move_arm", dict(x=.3,y=0,z=.2,roll=0,pitch=50,yaw=0)) is failure
 
 
-def test_pose_must_match_orientation_even_after_joint_action_success(monkeypatch):
+@pytest.mark.parametrize("cartesian", [False, True])
+def test_arm_does_not_require_extra_pose_feedback_after_controller_success(monkeypatch, cartesian):
     backend = ArmBackend({"controller_dir": "/tmp", "robot_name": "test"})
-    monkeypatch.setattr(backend, "ik_move", lambda *args: ToolResult.success("done"))
-    monkeypatch.setattr(backend, "pose", lambda: ToolResult.success("pose", dict(position=[.3,0,.2], rpy=[0,0,0])))
-    result = backend("move_arm", dict(x=.3,y=0,z=.2,roll=0,pitch=50,yaw=0))
-    assert result.error_code == "POSE_DEVIATION" and result.data["orientation_error_deg"] > 49
+    details = {"controller_completed": True}
+    monkeypatch.setattr(backend, "ik_move", lambda *args, **kwargs: ToolResult.success("controller completed", details))
+    monkeypatch.setattr(backend, "pose", lambda: pytest.fail("no second pose verification"))
+    result = backend("move_arm", dict(x=.3,y=0,z=.2,roll=0,pitch=50,yaw=0,cartesian=cartesian))
+    assert result.ok and result.data == {"motion": details}
+    assert result.message == "controller completed"
+
+
+@pytest.mark.parametrize("ok", [True, False])
+def test_position_only_move_uses_controller_result_without_pose_query(monkeypatch, ok):
+    backend = ArmBackend({"controller_dir": "/tmp", "robot_name": "test"})
+    calls = []
+    def move(*xyz):
+        calls.append(xyz)
+        return ok, "controller error"
+    monkeypatch.setattr(backend, "arm", lambda: NS(_move_group_move=move))
+    monkeypatch.setattr(backend, "pose", lambda: pytest.fail("no second pose verification"))
+    result = backend("move_arm", dict(x=.3,y=0,z=.2))
+    assert result.ok == ok and calls == [(.3,0.,.2)]
+    if ok:
+        assert result.data["controller_completed"] is True
+    else:
+        assert result.error_code == "MOTION_FAILED"
 
 
 def test_late_accepted_goal_is_cancelled_after_send_timeout():
@@ -262,6 +287,30 @@ def test_result_timeout_cancels_goal_and_never_resends(monkeypatch):
     assert calls == ["send", "result", "cancel"] and motion.goal is None
 
 
+@pytest.mark.parametrize("status,code", [(6,-5), (5,0), (4,-4)])
+def test_controller_failure_is_reported_without_retry(monkeypatch, status, code):
+    import sys
+    monkeypatch.setitem(sys.modules, "control_msgs.action", NS(FollowJointTrajectory=NS(Goal=NS)))
+    monkeypatch.setitem(sys.modules, "builtin_interfaces.msg", NS(Duration=NS))
+    motion, sent = PoseMotion.__new__(PoseMotion), []
+    motion.deadline, motion.goal = 1e12, None
+    handle = NS(accepted=True, get_result_async=lambda: "result",
+                cancel_goal_async=lambda: pytest.fail("terminal goal is already finished"))
+    def send(goal):
+        assert not getattr(goal, "goal_tolerance", [])
+        sent.append(goal)
+        return "send"
+    motion.action = NS(wait_for_server=lambda **kwargs: True, send_goal_async=send)
+    response = NS(status=status, result=NS(error_code=code, error_string="controller failure"))
+    motion._wait = lambda future, timeout: handle if future == "send" else response
+    with pytest.raises(MotionRejected) as exc:
+        motion.execute(trajectory(joints(), joints(.1)), 1)
+    assert exc.value.code == "MOTION_EXECUTION_FAILED" and len(sent) == 1
+    assert exc.value.data == {"action_status":status, "controller_error_code":code,
+                              "controller_error":"controller failure"}
+    assert motion.goal is None
+
+
 def test_remaining_execution_budget_is_checked_before_sending(monkeypatch):
     import sys
     import time
@@ -276,12 +325,12 @@ def test_remaining_execution_budget_is_checked_before_sending(monkeypatch):
     assert exc.value.code == "MOTION_PLAN_DURATION"
 
 
-def test_cartesian_path_is_slowed_checked_and_verified():
+def test_cartesian_path_is_slowed_checked_and_executed():
     backend=Backend()
     backend.cartesian_plan=lambda *args: trajectory(backend.start,backend.target,times=[0,1])
     result=move_cartesian(backend,[.3,0,.2],[0,90,0],MotionPolicy())
     assert result.ok and result.data['duration']==4
-    assert backend.events==['joints','joints','execute','verify']
+    assert backend.events==['joints','joints','execute']
 
 
 def test_cartesian_joint_loop_is_rejected_before_controller_dispatch():

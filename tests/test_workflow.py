@@ -67,6 +67,21 @@ def test_failed_descent_does_not_close_gripper(monkeypatch):
     assert not any(args.get('position') == 0.024 for _, args in calls)
 
 
+def test_controller_failure_details_are_preserved_and_stop_followup_actions(monkeypatch):
+    value = plan(); calls = []
+    details = {'action_status':6, 'controller_error_code':-4, 'controller_error':'trajectory aborted'}
+    def call(name, **args):
+        calls.append(name)
+        return (ToolResult.failure('MOTION_EXECUTION_FAILED', 'controller failure', details) if name=='move_arm'
+                else ToolResult.success('done', {'selected_index':0}))
+    monkeypatch.setattr(arm, 'call', call)
+    result = execute([{'object':'apple','target':'bowl'}], 'scene')
+    assert result.error_code == 'MOTION_EXECUTION_FAILED'
+    assert result.data['failure'] == details
+    assert calls == ['inspect_grasps','gripper_set','move_arm']
+    assert value.invalid
+
+
 @pytest.mark.parametrize('actions', [
     [{'object':'apple','target_position':[float('nan'),0,0]}],
     [{'object':'apple','target':'bowl'}, {'object':'apple','target':'plate'}],

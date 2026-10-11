@@ -2,7 +2,7 @@
 import time
 import math
 
-from core.health import ARM_JOINTS, fresh_joints
+from core.health import ARM_JOINTS
 from core.motion import (MotionPolicy, MotionRejected, driver_limits, move_pose, move_cartesian,
                          inspect_grasp_candidates)
 
@@ -205,7 +205,7 @@ class PoseMotion:
         if not self.action.wait_for_server(timeout_sec=min(2., max(0., self.deadline-time.monotonic()))):
             raise MotionRejected("MOTION_CONTROLLER_MISSING", "机械臂轨迹控制器不可用")
         if time.monotonic()+duration+4 > self.deadline:
-            raise MotionRejected("MOTION_PLAN_DURATION", "剩余时间不足以执行轨迹并确认到位，停止发送动作")
+            raise MotionRejected("MOTION_PLAN_DURATION", "剩余时间不足以等待控制器执行完成，停止发送动作")
         goal = FollowJointTrajectory.Goal()
         goal.trajectory = trajectory
         goal.goal_time_tolerance = Duration(sec=2)
@@ -222,34 +222,14 @@ class PoseMotion:
             response = self._wait(self.goal.get_result_async(), duration+3)
             self.goal = None
             if response.status != 4 or response.result.error_code != 0:
-                raise MotionRejected("MOTION_EXECUTION_FAILED", "规划轨迹执行失败，停止后续步骤")
+                raise MotionRejected("MOTION_EXECUTION_FAILED", "规划轨迹执行失败，停止后续步骤",
+                                     {"action_status": int(response.status),
+                                      "controller_error_code": int(response.result.error_code),
+                                      "controller_error": getattr(response.result, "error_string", "")})
         finally:
             if self.goal is not None:
                 self.goal.cancel_goal_async()
                 self.goal = None
-
-    def verify(self, target):
-        client = self.backend.joint()
-        since = time.monotonic()
-        settled = None
-        until = min(self.deadline, since+2)
-        while time.monotonic() < until:
-            sample = getattr(client, "_feedback", None)
-            if fresh_joints(sample, time.monotonic()) and sample[0] > since:
-                state = sample[1]
-                positions = dict(zip(state.name, state.position))
-                velocities = dict(zip(state.name, state.velocity))
-                quiet = not state.velocity or all(n in velocities and abs(velocities[n]) <= .05 for n in ARM_JOINTS)
-                if quiet and max(abs(positions[n]-target[n]) for n in ARM_JOINTS) <= .03:
-                    settled = sample[0] if settled is None else settled
-                    if sample[0]-settled >= .15:
-                        return positions
-                else:
-                    settled = None
-            else:
-                settled = None
-            time.sleep(.02)
-        raise MotionRejected("MOTION_NOT_CONFIRMED", "没有收到稳定到位的近期关节反馈，停止后续动作")
 
     def move(self, xyz, rpy):
         from logger import record_motion

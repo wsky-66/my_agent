@@ -29,6 +29,7 @@ class Simulator(Node):
     def __init__(self):
         super().__init__("pose_motion_simulator")
         self.positions = [0.]*6
+        self.pending = None
         self.scenario, self.iks, self.plans, self.goals = "normal", 0, 0, 0
         self.publisher = self.create_publisher(JointState, PREFIX+"/joint_states", qos_profile_sensor_data)
         self.create_timer(.02, self.publish)
@@ -39,6 +40,8 @@ class Simulator(Node):
         self.action = ActionServer(self, FollowJointTrajectory, PREFIX+"/arm_controller/follow_joint_trajectory", self.execute)
 
     def publish(self):
+        if self.pending is not None and time.monotonic() >= self.pending[0]:
+            self.positions, self.pending = self.pending[1], None
         msg = JointState()
         msg.name, msg.position, msg.velocity = list(ARM_JOINTS), self.positions, [0.]*6
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -113,12 +116,21 @@ class Simulator(Node):
 
     def execute(self, handle):
         self.goals += 1
+        goal = handle.request
+        assert goal.goal_time_tolerance.sec == 2
+        assert not goal.goal_tolerance and not goal.path_tolerance
         points = handle.request.trajectory.points
         assert len(points) >= 2
         for a, b in zip(points, points[1:]):
             dt = b.time_from_start.sec+b.time_from_start.nanosec*1e-9-a.time_from_start.sec-a.time_from_start.nanosec*1e-9
             assert max(abs(y-x)/dt for x,y in zip(a.positions,b.positions)) <= 3.14*.25+1e-8
-        self.positions = list(handle.request.trajectory.points[-1].positions)
+        target = list(handle.request.trajectory.points[-1].positions)
+        if self.scenario == "lag":
+            # Delay simulated feedback to prove that controller completion does
+            # not trigger a second arrival wait or position-error check.
+            self.pending = time.monotonic()+2.4, target
+        else:
+            self.positions = target
         handle.succeed()
         result = FollowJointTrajectory.Result()
         result.error_code = 0
@@ -183,14 +195,24 @@ try:
     assert simulator.goals == 2
     simulator.positions = [0.]*6
     time.sleep(.1)
+    simulator.scenario = "lag"
+    before = time.monotonic()
+    lagged = motion.move([.3,0.,.2], [0.,50.,0.])
+    assert lagged.ok and lagged.data["controller_completed"] is True, lagged.to_json()
+    assert time.monotonic()-before < 2., "unexpected post-controller feedback wait"
+    assert simulator.pending is not None and simulator.positions == [0.]*6
+    assert simulator.goals == 3
+    simulator.pending = None
+    simulator.positions = [0.]*6
+    time.sleep(.1)
     simulator.scenario="preflight"
     inspected=motion.inspect_grasps([dict(pre_position=[x,0.,.15],position=[x,0.,.05],
                                         rpy=[0.,90.,0.],opening=.035) for x in (.5,.3)])
     assert inspected.ok and inspected.data["selected_index"] == 1, inspected.to_json()
     assert inspected.data["attempts"][0]["error_code"] == "IK_NO_SOLUTION"
     assert inspected.data["transit"]["time_scale"] > 1
-    assert simulator.goals == 2 and motion._preview_opening is None
-    print("ROS 模拟验证通过：超速轨迹统一减速后执行；预检同样应用减速，跳过不可达候选，未发送执行动作。")
+    assert simulator.goals == 3 and motion._preview_opening is None
+    print("ROS 模拟验证通过：超速路径减速执行；控制器完成后不额外等待关节到位；未设置关节到位容差；预检没有发送执行动作。")
 finally:
     motion.close()
     executor.shutdown(timeout_sec=2)

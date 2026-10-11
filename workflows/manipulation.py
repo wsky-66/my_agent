@@ -178,6 +178,7 @@ def execute(actions, scene_id=None, return_to_sleep=True, allow_fallback=False):
                 plan.invalid = True
                 return ToolResult.failure(result.error_code, f"{action['object']} 在 {name} 步骤停止：{result.message}",
                         {"scene_id": scene_id, "completed": completed, "failed_step": index+1, "steps": steps,
+                         "failure": result.data,
                          "physical_state": "已执行动作不回滚，需要确认当前机械臂和物体状态"})
         plan.moved.add(action["object"])
         completed.append(action["object"])

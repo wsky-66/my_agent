@@ -176,12 +176,9 @@ def move_pose(backend, xyz, rpy, policy, audit=lambda event: None):
             raise MotionRejected("MOTION_ROBOT_MOVED", "规划期间关节状态变化，停止发送轨迹")
         audit({"stage": "planned", **data})
         backend.execute(trajectory, data["duration"])
-        actual = check_joints(backend.verify(target), limits, feedback=True)
-        if max(abs(actual[n]-target[n]) for n in ARM_JOINTS) > .03:
-            raise MotionRejected("MOTION_NOT_CONFIRMED", "执行后关节未到选定逆解，停止后续动作")
-        data["actual"] = actual
+        data["controller_completed"] = True
         audit({"stage": "completed", **data})
-        return ToolResult.success("规划轨迹已执行并确认关节到位", data)
+        return ToolResult.success("控制器报告规划轨迹执行完成", data)
     except MotionRejected as exc:
         audit({"stage": "rejected", "error_code": exc.code, **data, **exc.data})
         return ToolResult.failure(exc.code, str(exc), {**data, **exc.data})
@@ -272,12 +269,9 @@ def move_cartesian(backend, xyz, rpy, policy, audit=lambda event: None):
             raise MotionRejected("MOTION_ROBOT_MOVED", "笛卡尔规划期间关节变化，停止发送轨迹")
         audit({"stage":"planned",**data})
         backend.execute(path,data["duration"])
-        actual = check_joints(backend.verify(target),limits,feedback=True)
-        if max(abs(actual[n]-target[n]) for n in ARM_JOINTS)>.03:
-            raise MotionRejected("MOTION_NOT_CONFIRMED", "笛卡尔运动后关节未确认到位")
-        data['actual'] = actual
+        data["controller_completed"] = True
         audit({"stage":"completed",**data})
-        return ToolResult.success("完整笛卡尔轨迹已执行并确认到位",data)
+        return ToolResult.success("控制器报告完整笛卡尔轨迹执行完成",data)
     except MotionRejected as exc:
         audit({"stage":"rejected","error_code":exc.code,**data,**exc.data})
         return ToolResult.failure(exc.code,str(exc),{**data,**exc.data})

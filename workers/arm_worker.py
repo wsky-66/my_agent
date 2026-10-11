@@ -106,7 +106,6 @@ class ArmBackend:
             data = self.joint().get_joints()
             return ToolResult.success("已读取关节角度（弧度）", data) if data else ToolResult.failure("JOINT_STATE_UNAVAILABLE", "未收到关节状态")
         if action == "move_arm":
-            motion = None
             xyz = [float(args[k]) for k in ("x", "y", "z")]
             rpy = [args.get(k) for k in ("roll", "pitch", "yaw")]
             if not all(math.isfinite(x) for x in xyz):
@@ -121,33 +120,14 @@ class ArmBackend:
                 motion = self.ik_move(xyz, rpy, cartesian=True) if args.get("cartesian") else self.ik_move(xyz, rpy)
                 if not motion.ok:
                     return motion
-                ok, msg = True, ""
+                return ToolResult.success(motion.message, {"motion": motion.data})
             else:
                 if args.get("cartesian"):
                     raise ValueError("抓放的受检笛卡尔移动必须给出完整朝向")
                 ok, msg = self.arm()._move_group_move(*xyz)
             if not ok:
                 return ToolResult.failure("MOTION_FAILED", msg)
-            actual = self.pose()
-            if not actual.ok:
-                return actual
-            dev = max(abs(a-b) for a, b in zip(actual.data["position"], xyz))
-            if motion is not None:
-                from scipy.spatial.transform import Rotation
-                from logger import record_motion
-                desired = Rotation.from_euler("xyz", rpy, degrees=True)
-                measured = Rotation.from_euler("xyz", actual.data["rpy"], degrees=True)
-                angle = math.degrees((desired.inv()*measured).magnitude())
-                data = {**actual.data, "motion": motion.data, "orientation_error_deg": angle}
-                record_motion({"stage": "pose_checked", "position": xyz, "rpy": rpy,
-                    "actual_pose": actual.data, "position_error_m": dev, "orientation_error_deg": angle,
-                    "ok": dev <= .02 and angle <= 5})
-                if dev > .02 or angle > 5:
-                    return ToolResult.failure("POSE_DEVIATION", "实际位置或朝向未到目标，停止后续动作", data)
-                return ToolResult.success("末端已按规划轨迹到目标位置和朝向", data)
-            if dev > 0.07:
-                return ToolResult.failure("POSITION_DEVIATION", f"实际位置偏差 {dev:.3f}m，未确认到位", actual.data)
-            return ToolResult.success("末端已到目标位置", actual.data)
+            return ToolResult.success("控制器报告移动执行完成", {"requested_position": xyz, "controller_completed": True})
         if action == "gripper_set":
             value = float(args["position"])
             if not math.isfinite(value) or not 0.015 <= value <= 0.037:

@@ -7,6 +7,10 @@ client = worker("arm", config.ROS_PYTHON, {"controller_dir": config.CONTROLLER_D
 
 
 def call(action, **params):
+    from services.health import robot_status
+    ready = robot_status()
+    if not ready.ok:
+        return ready
     return client.request(action, params)
 
 

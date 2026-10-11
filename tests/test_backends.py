@@ -1,12 +1,14 @@
 from types import SimpleNamespace as NS
 import threading
 import time
+import sys
 import cv2
 import numpy as np
 import pytest
 
 from workers.arm_worker import ArmBackend
 from workers.camera_worker import CameraBackend
+from core.health import ARM_JOINTS
 
 
 def test_missing_joint_state_never_zeros_unknown_joints():
@@ -30,6 +32,33 @@ def test_partial_joint_target_preserves_all_other_current_angles():
     assert called == [{**state, 'waist': .5}]
 
 
+def test_joint_client_rejects_stale_cache_before_legacy_zero_fallback(monkeypatch):
+    sent = []
+    state = NS(name=ARM_JOINTS, position=[.2] * 6)
+
+    class LegacyJoint:
+        def __init__(self, name):
+            self._on_state(state)
+
+        def _on_state(self, msg):
+            self._state = msg
+
+        def set_joints(self, joints):
+            current = self.get_joints(timeout=.01) or dict.fromkeys(ARM_JOINTS, 0.)
+            sent.append(current)
+            return True
+
+    monkeypatch.setitem(sys.modules, 'joint_client', NS(JointClient=LegacyJoint, ARM_JOINTS=ARM_JOINTS))
+    backend = ArmBackend({'controller_dir': '/tmp', 'robot_name': 'wx250s'})
+    joint = backend.joint()
+    assert joint.get_joints(timeout=.01) == dict.fromkeys(ARM_JOINTS, .2)
+    joint._feedback = time.monotonic()-5, state
+    assert joint.get_joints(timeout=.01) is None
+    with pytest.raises(RuntimeError, match='反馈丢失'):
+        joint.set_joints({'waist': .5})
+    assert not sent
+
+
 @pytest.mark.parametrize('encoding,big_endian', [('16UC1', False), ('16UC1', True), ('32FC1', False)])
 def test_rgb_depth_capture_handles_row_padding_units_and_endianness(tmp_path, encoding, big_endian):
     backend = CameraBackend.__new__(CameraBackend)
@@ -43,7 +72,7 @@ def test_rgb_depth_capture_handles_row_padding_units_and_endianness(tmp_path, en
     depth = NS(height=2, width=2, step=2*dtype.itemsize+2, encoding=encoding,
                data=data, is_bigendian=big_endian)
     backend._pair = (time.monotonic(), rgb, depth)
-    backend._info = NS(k=[100,0,1, 0,100,1, 0,0,1])
+    backend._info = (time.monotonic(), NS(width=2, height=2, k=[100,0,1, 0,100,1, 0,0,1]))
     result = backend.capture(tmp_path)
     assert result.ok and result.data['timestamp'] == 12.5
     assert np.load(result.data['depth_path']) == pytest.approx(np.full((2,2), .5))

@@ -5,6 +5,7 @@ import threading
 import time
 
 from core.results import ToolResult
+from core.health import camera_readiness
 from workers.protocol import options, serve
 
 
@@ -37,7 +38,7 @@ class CameraBackend:
 
     def _on_info(self, info):
         with self._condition:
-            self._info = info
+            self._info = time.monotonic(), info
             self._condition.notify_all()
 
     def _spin(self):
@@ -45,20 +46,25 @@ class CameraBackend:
         while self._running and rclpy.ok():
             rclpy.spin_once(self.node, timeout_sec=0.1)
 
+    def _frames(self, timeout):
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while True:
+                result = camera_readiness(self._pair, self._info, time.monotonic())
+                if result.ok:
+                    return result, self._pair, self._info[1]
+                remaining = deadline-time.monotonic()
+                if remaining <= 0:
+                    return result, None, None
+                self._condition.wait(remaining)
+
     def capture(self, folder):
         import cv2
         import numpy as np
-        deadline = time.monotonic() + 6
-        with self._condition:
-            while not self._info or not self._pair or time.monotonic()-self._pair[0] > 1:
-                remaining = deadline-time.monotonic()
-                if remaining <= 0:
-                    return ToolResult.failure("CAMERA_NO_FRAME", "未收到近期的同步彩色、深度和内参")
-                self._condition.wait(remaining)
-            _, rgb, depth = self._pair
-            info = self._info
-        if rgb.encoding not in ("rgb8", "bgr8") or depth.encoding not in ("16UC1", "mono16", "32FC1"):
-            return ToolResult.failure("IMAGE_ENCODING", "不支持的相机图像编码")
+        result, pair, info = self._frames(6)
+        if not result.ok:
+            return result
+        _, rgb, depth = pair
         color = np.ndarray((rgb.height, rgb.width, 3), np.uint8, buffer=rgb.data,
                            strides=(rgb.step, 3, 1)).copy()
         if rgb.encoding == "rgb8":
@@ -84,6 +90,8 @@ class CameraBackend:
         return ToolResult.success("已捕获同步 RGB-D 场景", snapshot)
 
     def __call__(self, action, params):
+        if action == "status":
+            return self._frames(1.2)[0]
         if action == "capture":
             return self.capture(params["folder"])
         raise ValueError("未知相机动作")

@@ -15,7 +15,7 @@ def stop_camera() -> ToolResult:
     return lifecycle.stop_camera()
 
 
-@registry.register(description="查询相机彩色和对齐深度话题就绪情况。")
+@registry.register(description="只读查询相机近期同步彩色、对齐深度帧及有效内参；话题存在不代表已连接。")
 def camera_status() -> ToolResult:
     return lifecycle.camera.status()
 

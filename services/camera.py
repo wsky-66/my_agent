@@ -5,7 +5,12 @@ from config import config
 from services.runtime import worker
 
 client = worker("camera", config.ROS_PYTHON, {"prefix": config.CAMERA_PREFIX}, ros=True, timeout=20)
+client.startup_timeout = 10
 _last = None
+
+
+def status():
+    return client.request("status")
 
 
 def capture():

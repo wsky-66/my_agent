@@ -14,6 +14,6 @@ def stop_robot() -> ToolResult:
     return lifecycle.stop_robot()
 
 
-@registry.register(description="查询机械臂真实使用的 IK 和笛卡尔服务是否就绪。")
+@registry.register(description="只读查询机械臂驱动、近期完整关节反馈、活动控制器与规划接口；服务名存在不代表已连接。")
 def robot_status() -> ToolResult:
     return lifecycle.robot.status()

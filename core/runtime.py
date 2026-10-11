@@ -20,11 +20,18 @@ def terminate(proc):
         return
     try:
         os.killpg(proc.pid, signal.SIGTERM)
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
+        deadline = time.monotonic() + 3
+        # The group may outlive its leader (ROS launch can lose a critical child).
+        while time.monotonic() < deadline:
+            proc.poll()  # reap the leader before checking for remaining descendants
+            try:
+                os.killpg(proc.pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
             os.killpg(proc.pid, signal.SIGKILL)
-            proc.wait(timeout=3)
+        proc.wait(timeout=3)
     except ProcessLookupError:
         proc.wait()
 

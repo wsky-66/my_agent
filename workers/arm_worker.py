@@ -4,6 +4,7 @@ import sys
 import time
 
 from core.results import ToolResult
+from core.health import fresh_joints
 from workers.protocol import options, serve
 
 
@@ -18,7 +19,32 @@ class ArmBackend:
             import joint_client
             # The legacy module uses a global topic despite accepting robot_name.
             joint_client.JOINT_TOPIC = f"/{self.opts['robot_name']}/joint_states"
-            self.clients["joint"] = joint_client.JointClient(self.opts["robot_name"])
+            class FreshJointClient(joint_client.JointClient):
+                def _on_state(self, msg):
+                    self._feedback = time.monotonic(), msg
+                    super()._on_state(msg)
+
+                def get_joints(self, timeout=3):
+                    deadline = time.monotonic() + timeout
+                    while time.monotonic() < deadline:
+                        sample = getattr(self, "_feedback", None)
+                        if fresh_joints(sample, time.monotonic()):
+                            positions = dict(zip(sample[1].name, sample[1].position))
+                            return {n: positions[n] for n in joint_client.ARM_JOINTS}
+                        time.sleep(0.05)
+                    if getattr(self, "_require_feedback", False):
+                        raise RuntimeError("近期完整关节反馈丢失，停止发送轨迹")
+                    return None
+
+                def set_joints(self, joints):
+                    # Legacy code substitutes zero when feedback is missing.
+                    self._require_feedback = True
+                    try:
+                        return super().set_joints(joints)
+                    finally:
+                        self._require_feedback = False
+
+            self.clients["joint"] = FreshJointClient(self.opts["robot_name"])
         return self.clients["joint"]
 
     def arm(self):

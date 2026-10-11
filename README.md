@@ -33,6 +33,12 @@ python3 main.py
 
 默认会连接机械臂与相机并在后台加载语音。`ARM_AUTO_START=0`、`CAM_AUTO_START=0` 可改为手动启动；`ENABLE_*` 决定模型可见的能力。`--no-hardware` 关闭机械臂、相机和相关视觉工具，`--text-only` 关闭语音。已有外部 ROS 服务会被复用，退出只清理本程序启动的进程。
 
+“就绪”需要实际数据：机械臂必须收到最近 1 秒内的完整关节反馈、驱动只读查询响应、活动的机械臂及夹爪控制器，以及轨迹和规划接口；相机必须收到近期同步彩色、对齐深度帧和有效内参。仅存在 ROS 服务或话题不会显示就绪。每次机械臂请求会先检查连接，旧关节缓存不会用于补齐动作目标。
+
+机械臂启动前会读取已安装的 `interbotix_xsarm_control/config/<ROBOT_NAME>.yaml`，检查默认驱动的串口是否存在及有无读写权限。出现 `SERIAL_MISSING` 时先检查供电、USB 数据连接和设备规则，不能靠重启规划服务恢复。相机启动日志出现 `UVCIOC_CTRL_QUERY ... Connection timed out` 时会报告 `CAMERA_USB_TIMEOUT`；设备经过扩展坞时，可分别改为主机直连排查 USB 链路，相机使用 USB 3 数据口。失败、超时或 Ctrl-C 会清理本次拥有的启动进程组，外部服务保留。
+
+`/robot status` 与 `/camera status` 只读查询，不启动硬件驱动、不发送动作；自然语言询问连接状态也只查询所问设备。
+
 ## 对话与任务
 
 例如：“把苹果放进碗里，再把香蕉放到盘子上”。模型将源物体与放置目标交给 `execute_pick_place`，程序统一预扫场景，并按顺序执行每个动作。
@@ -129,7 +135,7 @@ python3 -m compileall -q agent.py main.py config.py core services workers workfl
 python3 main.py --demo
 ```
 
-关闭 pytest 第三方插件自动加载，避免宿主环境插件版本冲突。测试覆盖流式工具参数、失败后停止、取消与历史恢复、worker 复用和超时、RGB-D 解码与坐标变换、场景一致性、多物体动作顺序以及终端命令。
+关闭 pytest 第三方插件自动加载，避免宿主环境插件版本冲突。测试覆盖流式工具参数、失败后停止、取消与历史恢复、worker 复用和超时、真实反馈就绪条件、启动失败及中断后的清理、RGB-D 解码与坐标变换、场景一致性、多物体动作顺序以及终端命令。
 
 错误写入 `logs/agent_error.log`，阶段时间写入 `logs/timings.jsonl`，日志自动轮转。`/metrics` 展示最近回合的模型请求、服务启动、检测、分割、抓取与动作耗时；总时间与子阶段时间有包含关系，不应直接全部相加。
 

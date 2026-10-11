@@ -5,6 +5,9 @@ import time
 import threading
 from core.execution import ExecutionContext, current
 from core.runtime import JsonWorker
+from core.runtime import terminate
+from pathlib import Path
+import subprocess
 
 SCRIPT = r'''
 import json, os, sys, time
@@ -77,3 +80,22 @@ serve(lambda action, args: ToolResult.success('invalid', {'x': float('nan')}) if
         assert worker.request('good').ok
     finally:
         worker.stop()
+
+
+def test_termination_cleans_descendants_after_launch_leader_exits(tmp_path):
+    pidfile = tmp_path/'child.pid'
+    child = 'import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(60)'
+    script = f"import subprocess,sys,time; from pathlib import Path; p=subprocess.Popen([sys.executable,'-c',{child!r}]); Path({str(pidfile)!r}).write_text(str(p.pid)); time.sleep(.1)"
+    leader = subprocess.Popen([sys.executable, '-c', script], start_new_session=True)
+    leader.wait(timeout=3)
+    pid = int(pidfile.read_text())
+    try:
+        terminate(leader)
+        stat = Path(f'/proc/{pid}/stat')
+        for _ in range(30):
+            if not stat.exists() or stat.read_text().split()[2] == 'Z':
+                break
+            time.sleep(.01)
+        assert not stat.exists() or stat.read_text().split()[2] == 'Z'
+    finally:
+        terminate(leader)

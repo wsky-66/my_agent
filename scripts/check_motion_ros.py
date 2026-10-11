@@ -99,20 +99,25 @@ class Simulator(Node):
         planned.error_code.val = -1 if self.scenario == "fail" else 1
         planned.trajectory.joint_trajectory.joint_names = list(ARM_JOINTS)
         values = [self.positions, target]
-        times = [0, 2]
+        times = [0, .2] if self.scenario in ("speed", "preflight") else [0, 2]
         if self.scenario == "loop":
             detour = list(self.positions)
             detour[-1] = 1.1
             values, times = [self.positions, detour, self.positions, target], [0,2,4,5]
         for positions, seconds in zip(values, times):
             point = JointTrajectoryPoint()
-            point.positions, point.time_from_start.sec = list(positions), seconds
+            point.positions = list(positions)
+            point.time_from_start.sec, point.time_from_start.nanosec = divmod(round(seconds*1e9), 1_000_000_000)
             planned.trajectory.joint_trajectory.points.append(point)
         return response
 
     def execute(self, handle):
         self.goals += 1
-        assert len(handle.request.trajectory.points) >= 2
+        points = handle.request.trajectory.points
+        assert len(points) >= 2
+        for a, b in zip(points, points[1:]):
+            dt = b.time_from_start.sec+b.time_from_start.nanosec*1e-9-a.time_from_start.sec-a.time_from_start.nanosec*1e-9
+            assert max(abs(y-x)/dt for x,y in zip(a.positions,b.positions)) <= 3.14*.25+1e-8
         self.positions = list(handle.request.trajectory.points[-1].positions)
         handle.succeed()
         result = FollowJointTrajectory.Result()
@@ -171,13 +176,21 @@ try:
     failed = motion.move([.3,0.,.2], [0.,50.,0.])
     assert failed.error_code == "MOTION_PLAN_FAILED", failed.to_json()
     assert simulator.goals == 1
+    simulator.scenario = "speed"
+    slowed = motion.move([.3,0.,.2], [0.,50.,0.])
+    assert slowed.ok and slowed.data["time_scale"] > 1, slowed.to_json()
+    assert max(slowed.data["peak_speed_rad_s"].values()) <= 3.14*.25
+    assert simulator.goals == 2
+    simulator.positions = [0.]*6
+    time.sleep(.1)
     simulator.scenario="preflight"
     inspected=motion.inspect_grasps([dict(pre_position=[x,0.,.15],position=[x,0.,.05],
                                         rpy=[0.,90.,0.],opening=.035) for x in (.5,.3)])
     assert inspected.ok and inspected.data["selected_index"] == 1, inspected.to_json()
     assert inspected.data["attempts"][0]["error_code"] == "IK_NO_SOLUTION"
-    assert simulator.goals == 1 and motion._preview_opening is None
-    print("ROS 模拟验证通过：近端逆解与轨迹检查通过；预检使用真实 ROS 消息并跳过不可达候选，未发送执行动作。")
+    assert inspected.data["transit"]["time_scale"] > 1
+    assert simulator.goals == 2 and motion._preview_opening is None
+    print("ROS 模拟验证通过：超速轨迹统一减速后执行；预检同样应用减速，跳过不可达候选，未发送执行动作。")
 finally:
     motion.close()
     executor.shutdown(timeout_sec=2)

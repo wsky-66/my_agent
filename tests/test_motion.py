@@ -5,7 +5,8 @@ import pytest
 
 from core.health import ARM_JOINTS
 from core.motion import (MotionPolicy, MotionRejected, check_joints, driver_limits,
-                         move_pose, move_cartesian, nearest_solution, validate_trajectory)
+                         move_pose, move_cartesian, nearest_solution, validate_trajectory,
+                         prepare_trajectory, inspect_grasp_candidates)
 from core.results import ToolResult
 from workers.arm_worker import ArmBackend
 from workers.pose_motion import PoseMotion
@@ -91,7 +92,7 @@ def test_feedback_outside_model_is_never_normalized_and_sent(value):
     assert "ik" not in backend.events and "execute" not in backend.events
 
 
-@pytest.mark.parametrize("kind", ["start", "end", "loop", "speed", "nan", "time", "duplicate", "single"])
+@pytest.mark.parametrize("kind", ["start", "end", "loop", "duration", "nan", "time", "duplicate", "single"])
 def test_bad_planned_path_never_reaches_controller(kind):
     backend = Backend()
     start, target = backend.start, backend.target
@@ -101,8 +102,9 @@ def test_bad_planned_path_never_reaches_controller(kind):
         path = trajectory(start, joints(.1))
     elif kind == "loop":
         path = trajectory(start, joints(1.), start, target, times=[0,2,4,5])
-    elif kind == "speed":
+    elif kind == "duration":
         path = trajectory(start, target, times=[0,.1])
+        path.points[1].velocities = [1000.]*6  # slowing would exceed the execution budget
     elif kind == "nan":
         path = trajectory(start, target)
         path.points[1].velocities = [float("nan")]*6
@@ -116,6 +118,56 @@ def test_bad_planned_path_never_reaches_controller(kind):
     backend.path = path
     result = move_pose(backend, [.3,0,.2], [0,50,0], MotionPolicy())
     assert not result.ok and "execute" not in backend.events
+
+
+def test_speed_check_reports_actual_limit_source_and_required_slowdown():
+    path = trajectory(joints(), joints(.2), times=[0,.2])
+    with pytest.raises(MotionRejected) as exc:
+        validate_trajectory(path, joints(), joints(.2), limits(), MotionPolicy())
+    assert exc.value.code == "MOTION_EXCESS_SPEED"
+    assert exc.value.data["speed_rad_s"] == 1.
+    assert exc.value.data["allowed_rad_s"] == pytest.approx(.83425)
+    assert exc.value.data["speed_source"] == "segment"
+    assert exc.value.data["point_index"] == 1
+
+
+def test_overspeed_plan_is_slowed_to_driver_limit_with_geometry_preserved():
+    from copy import deepcopy
+    start, target = joints(), joints(.4)
+    path = trajectory(start, joints(.2), target, times=[0,.2,.4])
+    for p in path.points:
+        p.velocities = [1.2]*6
+        p.accelerations = [2.4]*6
+    before = deepcopy(path)
+    metrics = prepare_trajectory(path, start, target, limits(), MotionPolicy())
+    factor = metrics["time_scale"]
+    assert factor == pytest.approx(1.2/(3.14*.25)*(1.+1e-6))
+    assert metrics["original_duration"] == .4
+    assert metrics["duration"] == pytest.approx(.4*factor, abs=1e-9)
+    assert max(metrics["peak_speed_rad_s"].values()) <= 3.14*.25
+    for a, b in zip(before.points, path.points):
+        assert a.positions == b.positions
+        assert b.velocities == pytest.approx([v/factor for v in a.velocities])
+        assert b.accelerations == pytest.approx([v/factor**2 for v in a.accelerations])
+
+
+def test_speed_repair_cannot_hide_joint_detours_or_endpoint_errors():
+    for path in (trajectory(joints(), joints(1.), joints(), joints(.2), times=[0,.1,.2,.3]),
+                 trajectory(joints(), joints(.1), times=[0,.01])):
+        with pytest.raises(MotionRejected) as exc:
+            prepare_trajectory(path, joints(), joints(.2), limits(), MotionPolicy())
+        assert exc.value.code in {"MOTION_EXCESS_ROTATION", "MOTION_END_MISMATCH"}
+
+
+def test_pose_execution_uses_the_slowed_trajectory_and_duration():
+    backend = Backend()
+    backend.path = trajectory(backend.start, backend.target, times=[0,.1])
+    sent = []
+    backend.execute = lambda path, duration: sent.append((path, duration))
+    result = move_pose(backend, [.3,0,.2], [0,50,0], MotionPolicy())
+    assert result.ok and len(sent) == 1
+    assert sent[0][1] == result.data["duration"] > .1
+    assert validate_trajectory(sent[0][0], backend.start, backend.target, limits(), MotionPolicy())
 
 
 def test_robot_change_during_planning_aborts_dispatch():
@@ -279,6 +331,35 @@ def test_incomplete_descent_in_preflight_never_opens_or_executes():
     assert result.error_code=='NO_REACHABLE_GRASP'
     assert result.data['attempts'][0]['error_code']=='CARTESIAN_PATH_INCOMPLETE'
     assert 'execute' not in backend.events
+
+
+def test_preflight_and_execution_share_speed_repair_for_both_path_phases():
+    backend = Backend(); backend.preview_opening = lambda value: None
+    backend.path = trajectory(backend.start, backend.target, times=[0,.1])
+    backend.cartesian_plan = lambda *args: trajectory(backend.target, joints(.3), times=[0,.02])
+    c = dict(pre_position=[.3,0,.15], position=[.3,0,.05], rpy=[0,90,0], opening=.03)
+    result = inspect_grasp_candidates(backend, [c], MotionPolicy())
+    assert result.ok
+    assert result.data['transit']['time_scale'] > 1
+    assert result.data['descent']['time_scale'] > 1
+    assert 'execute' not in backend.events
+    for phase in ('transit', 'descent'):
+        assert max(result.data[phase]['peak_speed_rad_s'].values()) <= 3.14*.25
+
+
+def test_failed_preflight_records_each_phase_and_solver_error_for_diagnosis():
+    backend = Backend(); backend.preview_opening = lambda value: None
+    c = dict(pre_position=[.3,0,.15], position=[.3,0,.05], rpy=[0,90,0], opening=.03)
+    def fail(*args):
+        raise MotionRejected('IK_NO_SOLUTION', 'no solution', {'ik_error_codes': [-31]*3})
+    backend.inverse_solutions = fail
+    events = []
+    result = inspect_grasp_candidates(backend, [c], MotionPolicy(), events.append)
+    assert result.error_code == 'NO_REACHABLE_GRASP'
+    assert [e['stage'] for e in events] == ['grasp_preflight_start',
+        'grasp_preflight_candidate_rejected', 'grasp_preflight_rejected']
+    assert events[1]['candidate'] == c and events[1]['phase'] == 'ik'
+    assert events[1]['ik_error_codes'] == [-31]*3
 
 
 def test_preview_finger_state_is_only_present_in_planning_requests():

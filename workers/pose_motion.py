@@ -163,7 +163,8 @@ class PoseMotion:
         motion.path_constraints = self._constraints(start, limits, policy.max_joint_change)
         response = self._service(self.planner, request, 6).motion_plan_response
         if response.error_code.val != 1:
-            raise MotionRejected("MOTION_PLAN_FAILED", "完整路径规划失败，停止移动；请拆分位置或朝向变化")
+            raise MotionRejected("MOTION_PLAN_FAILED", "完整路径规划失败，停止移动；请拆分位置或朝向变化",
+                                 {"planning_error_code": int(response.error_code.val)})
         return response.trajectory.joint_trajectory
 
     def cartesian_plan(self, xyz, rpy, start, limits, policy):
@@ -184,7 +185,9 @@ class PoseMotion:
         request.path_constraints = self._constraints(start,limits,policy.max_joint_change)
         response = self._service(self.cartesian,request,6)
         if response.error_code.val!=1 or not math.isfinite(response.fraction) or response.fraction<.999:
-            raise MotionRejected("CARTESIAN_PATH_INCOMPLETE","进近/撤离的笛卡尔路径不完整，停止执行")
+            raise MotionRejected("CARTESIAN_PATH_INCOMPLETE","进近/撤离的笛卡尔路径不完整，停止执行",
+                                 {"cartesian_error_code": int(response.error_code.val),
+                                  "fraction": float(response.fraction) if math.isfinite(response.fraction) else None})
         return response.solution.joint_trajectory
 
     @staticmethod

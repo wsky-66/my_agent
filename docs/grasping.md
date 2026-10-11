@@ -33,6 +33,12 @@ pregrasp = ee_position - rotation[:, 0] * 0.10
 
 笛卡尔路径必须规划完整，沿用关节限位、累计转角、速度和近期状态检查。已计时轨迹按配置降速；无有效计时、部分路径和任何动作失败均停止，不使用旧控制器的盲目回退。撤离沿进近路径返回，保持同一朝向。无候选时不会按重心和固定朝向尝试抓取。
 
+预检和执行都按驱动返回的关节速度限位验证计时。几何与计时有效、只有速度超限的路径，会统一延长时间到驱动限位乘 `ARM_VELOCITY_SCALING`，并同步降低速度及加速度后重新完整检查；不会提高阈值，也不会修改路径或角度。日志记录原时长、减速倍数、峰值速度，以及失败候选的 `ik` / `transit` / `descent` 阶段。
+
+2026-10-11 的辣椒场景只读复测发现，安装的 wx250s MoveIt 配置将六个关节的 `has_velocity_limits` 设为 `false`。Humble 的 TOTG 在此分支使用默认 1 rad/s，未应用请求里的速度缩放；两个可求解候选因此超过程序的约 0.835 rad/s 检查阈值。统一减速后，两者的进近和完整下降路径均通过，肩关节峰值约 0.785 rad/s；其余六个仍返回 IK 错误码 `-31`。复测没有发送运动指令，不代表实际夹持成功。
+
+官方依据：[Interbotix MoveIt 2 配置](https://docs.trossenrobotics.com/interbotix_xsarms_docs/ros2_packages/moveit_motion_planning_configuration.html)、[MoveIt Humble 轨迹计时](https://moveit.picknik.ai/humble/doc/examples/time_parameterization/time_parameterization_tutorial.html)、[Humble TOTG 源码](https://github.com/moveit/moveit2/blob/humble/moveit_core/trajectory_processing/src/time_optimal_trajectory_generation.cpp)。
+
 ## 参数和复现
 
 `GRASP_CONTEXT_PX` 默认 35；`GRASP_COLLISION_BUDGET` 默认 2000；`GRASP_SCORE_MIN` 保留原默认 0。模型分数不是经过校准的成功概率。`GRIPPER_MESH_DIR` 指向已安装的原装 STL 目录。

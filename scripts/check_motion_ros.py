@@ -17,7 +17,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectoryPoint
 from interbotix_xs_msgs.srv import RobotInfo
-from moveit_msgs.srv import GetPositionIK, GetMotionPlan
+from moveit_msgs.srv import GetPositionIK, GetMotionPlan, GetCartesianPath
 from control_msgs.action import FollowJointTrajectory
 from core.health import ARM_JOINTS, fresh_joints
 from workers.pose_motion import PoseMotion
@@ -35,6 +35,7 @@ class Simulator(Node):
         self.create_service(RobotInfo, PREFIX+"/get_robot_info", self.info)
         self.create_service(GetPositionIK, "/compute_ik", self.ik)
         self.create_service(GetMotionPlan, "/plan_kinematic_path", self.plan)
+        self.create_service(GetCartesianPath, "/compute_cartesian_path", self.cartesian)
         self.action = ActionServer(self, FollowJointTrajectory, PREFIX+"/arm_controller/follow_joint_trajectory", self.execute)
 
     def publish(self):
@@ -55,11 +56,35 @@ class Simulator(Node):
         assert ir.avoid_collisions and ir.robot_state.is_diff and len(ir.constraints.joint_constraints) == 6
         assert ir.pose_stamped.header.frame_id == PREFIX[1:]+"/base_link"
         assert ir.timeout.nanosec == 350_000_000
+        if self.scenario == "preflight":
+            assert ir.robot_state.joint_state.name[-2:] == ["left_finger", "right_finger"]
+            assert list(ir.robot_state.joint_state.position[-2:]) == [.035, -.035]
+            if ir.pose_stamped.pose.position.x > .4:
+                self.iks += 1
+                response.error_code.val = -31
+                return response
         values = [0.]*6
         values[-1] = math.radians(-170) if self.scenario == "wrap" else (1.8, .2, .8)[self.iks%3]
         self.iks += 1
         response.error_code.val = 1
         response.solution.joint_state.name, response.solution.joint_state.position = list(ARM_JOINTS), values
+        return response
+
+    def cartesian(self, request, response):
+        assert self.scenario == "preflight"
+        assert request.avoid_collisions and request.start_state.is_diff
+        assert request.start_state.joint_state.name[-2:] == ["left_finger", "right_finger"]
+        assert list(request.start_state.joint_state.position[-2:]) == [.035, -.035]
+        start=dict(zip(request.start_state.joint_state.name,request.start_state.joint_state.position))
+        values=[start[n] for n in ARM_JOINTS]
+        end=list(values);end[-1]+=.05
+        response.error_code.val=1
+        response.fraction=1.
+        response.solution.joint_trajectory.joint_names=list(ARM_JOINTS)
+        for positions,seconds in [(values,0),(end,1)]:
+            point=JointTrajectoryPoint()
+            point.positions,point.time_from_start.sec=positions,seconds
+            response.solution.joint_trajectory.points.append(point)
         return response
 
     def plan(self, request, response):
@@ -146,7 +171,13 @@ try:
     failed = motion.move([.3,0.,.2], [0.,50.,0.])
     assert failed.error_code == "MOTION_PLAN_FAILED", failed.to_json()
     assert simulator.goals == 1
-    print("ROS 模拟验证通过：选择近端逆解并规划执行；跨角度边界、绕路和规划失败均未发送动作。")
+    simulator.scenario="preflight"
+    inspected=motion.inspect_grasps([dict(pre_position=[x,0.,.15],position=[x,0.,.05],
+                                        rpy=[0.,90.,0.],opening=.035) for x in (.5,.3)])
+    assert inspected.ok and inspected.data["selected_index"] == 1, inspected.to_json()
+    assert inspected.data["attempts"][0]["error_code"] == "IK_NO_SOLUTION"
+    assert simulator.goals == 1 and motion._preview_opening is None
+    print("ROS 模拟验证通过：近端逆解与轨迹检查通过；预检使用真实 ROS 消息并跳过不可达候选，未发送执行动作。")
 finally:
     motion.close()
     executor.shutdown(timeout_sec=2)

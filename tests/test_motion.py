@@ -282,13 +282,26 @@ def test_incomplete_descent_in_preflight_never_opens_or_executes():
 
 
 def test_preview_finger_state_is_only_present_in_planning_requests():
+    from array import array
+    class ArrayBackedJointState:
+        @property
+        def position(self):
+            return self._position
+
+        @position.setter
+        def position(self, value):
+            self._position=array('d',value)
+
     motion=PoseMotion.__new__(PoseMotion)
-    state=NS(joint_state=NS())
+    state=NS(joint_state=ArrayBackedJointState())
     motion.preview_opening(.035);motion._start_state(state,joints())
     assert state.joint_state.name[-2:]==['left_finger','right_finger']
-    assert state.joint_state.position[-2:]==[.035,-.035]
+    assert list(state.joint_state.position[-2:])==[.035,-.035]
+    motion.preview_opening(.03);motion._start_state(state,joints(.2))
+    assert list(state.joint_state.position)==[.2]*6+[.03,-.03]
     motion.preview_opening(None);motion._start_state(state,joints())
     assert state.joint_state.name==list(ARM_JOINTS)
+    assert list(state.joint_state.position)==[0.]*6
 
 
 @pytest.mark.parametrize('error,expected', [(-31,'IK_NO_SOLUTION'),(-18,'IK_REQUEST_INVALID'),(1,'IK_RESPONSE_INVALID')])
@@ -305,3 +318,34 @@ def test_ik_solver_error_codes_are_preserved(monkeypatch,error,expected):
     with pytest.raises(MotionRejected) as exc:
         motion.inverse_solutions([.3,0,.2],[0,90,0],joints(),limits(),MotionPolicy())
     assert exc.value.code==expected and exc.value.data['ik_error_codes']==[error]*3
+
+
+def test_real_ros_planning_states_serialize_with_preview_fingers():
+    from pathlib import Path
+    import subprocess
+    setup=Path('/opt/ros/humble/setup.bash')
+    if not setup.is_file():
+        pytest.skip('ROS Humble runtime unavailable')
+    script='''from moveit_msgs.srv import GetPositionIK,GetMotionPlan,GetCartesianPath
+from rclpy.serialization import serialize_message,deserialize_message
+from workers.pose_motion import PoseMotion
+from core.health import ARM_JOINTS
+motion=PoseMotion.__new__(PoseMotion)
+for message,state in [(GetPositionIK.Request(),lambda m:m.ik_request.robot_state),
+                      (GetMotionPlan.Request(),lambda m:m.motion_plan_request.start_state),
+                      (GetCartesianPath.Request(),lambda m:m.start_state)]:
+    for opening in [.035,.03,None]:
+        motion.preview_opening(opening)
+        motion._start_state(state(message),{n:.2 for n in ARM_JOINTS})
+        decoded=deserialize_message(serialize_message(message),type(message))
+        expected_names=list(ARM_JOINTS)+(['left_finger','right_finger'] if opening is not None else [])
+        expected_positions=[.2]*6+([opening,-opening] if opening is not None else [])
+        assert state(decoded).is_diff
+        assert state(decoded).joint_state.name==expected_names
+        assert list(state(decoded).joint_state.position)==expected_positions
+print('IK, motion-plan and Cartesian requests serialized successfully')
+'''
+    result=subprocess.run(['bash','-c','source /opt/ros/humble/setup.bash && exec /usr/bin/python3 -'],
+                          input=script,text=True,capture_output=True,timeout=15,
+                          cwd=Path(__file__).resolve().parents[1])
+    assert result.returncode==0,result.stdout+result.stderr

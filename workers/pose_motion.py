@@ -131,12 +131,16 @@ class PoseMotion:
 
     def _start_state(self, state, joints):
         state.is_diff = True
-        state.joint_state.name = list(ARM_JOINTS)
-        state.joint_state.position = [joints[n] for n in ARM_JOINTS]
+        names = list(ARM_JOINTS)
+        positions = [float(joints[n]) for n in ARM_JOINTS]
         opening = getattr(self, "_preview_opening", None)
         if opening is not None:
-            state.joint_state.name += ["left_finger", "right_finger"]
-            state.joint_state.position += [opening, -opening]
+            names.extend(["left_finger", "right_finger"])
+            positions.extend([float(opening), -float(opening)])
+        # ROS converts sequence<float64> to array('d') on assignment. Build
+        # the complete list first; array += list raises TypeError.
+        state.joint_state.name = names
+        state.joint_state.position = positions
 
     def inspect_grasps(self, candidates):
         from logger import record_motion

@@ -17,7 +17,7 @@ class HealthBackend:
         from sensor_msgs.msg import JointState
         from controller_manager_msgs.srv import ListControllers
         from interbotix_xs_msgs.srv import RobotInfo
-        from moveit_msgs.srv import GetPositionIK, GetCartesianPath
+        from moveit_msgs.srv import GetPositionIK, GetCartesianPath, GetMotionPlan
         from control_msgs.action import FollowJointTrajectory
         rclpy.init()
         self.node = Node("my_agent_health")
@@ -28,7 +28,8 @@ class HealthBackend:
         self.driver = self.node.create_client(RobotInfo, prefix + "/get_robot_info")
         self.controllers = self.node.create_client(ListControllers, prefix + "/controller_manager/list_controllers")
         self.planning = {"ik": self.node.create_client(GetPositionIK, "/compute_ik"),
-                         "cartesian": self.node.create_client(GetCartesianPath, "/compute_cartesian_path")}
+                         "cartesian": self.node.create_client(GetCartesianPath, "/compute_cartesian_path"),
+                         "joint_path": self.node.create_client(GetMotionPlan, "/plan_kinematic_path")}
         self.actions = {name: ActionClient(self.node, FollowJointTrajectory, prefix + f"/{name}/follow_joint_trajectory")
                         for name in ("arm_controller", "gripper_controller")}
 

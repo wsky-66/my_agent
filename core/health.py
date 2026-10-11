@@ -34,7 +34,7 @@ def robot_readiness(sample, now, driver_joints, controllers, actions, planning):
         "driver_response": set(ARM_JOINTS).issubset(driver_joints),
         "active_controllers": all(controllers.get(n) == "active" for n in ("arm_controller", "gripper_controller")),
         "trajectory_actions": all(actions.get(n, False) for n in ("arm_controller", "gripper_controller")),
-        "planning_services": all(planning.get(n, False) for n in ("ik", "cartesian")),
+        "planning_services": all(planning.get(n, False) for n in ("ik", "cartesian", "joint_path")),
     }
     return readiness("机械臂", checks, {
         "joint_feedback": "缺少近期完整关节反馈", "driver_response": "驱动未响应",

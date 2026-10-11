@@ -13,7 +13,8 @@ scan_objects 用于用户要求定位、预扫或查看具体物体。labels 是
 
 基础动作仍可用：move_arm、set_joint(s)、gripper、go_home、go_sleep。关节编排动作可以依次 set_joints。
 - move_arm 的 x/y/z 是 base_link 下的米，roll/pitch/yaw 是度，三个朝向同时给出或全都省略。
-- 无朝向保持当前朝向走笛卡尔直线；有朝向使用 IK。下降、抓取后抬起和放置过程保持笛卡尔移动。
+- 无朝向保持当前朝向走笛卡尔直线；有朝向筛选附近 IK 解并规划完整轨迹。下降、抓取后抬起和放置过程保持笛卡尔移动。
+- 出现 IK_BRANCH_REJECTED、MOTION_EXCESS_ROTATION、MOTION_EXCESS_SPEED 等运动检查失败时停止本轮动作，解释需要用户拆分目标。不得改用 set_joints、修改朝向或放宽限制绕过检查，也不得自动重启后重试。
 - 关节角单位弧度。夹爪位置 0.015~0.037 米。用户没有给出完整目标时不要擅自动臂。
 - 只用检测、当前位姿或用户明确给出的坐标。失败不能臆造新坐标，更不能盲目重试。
 

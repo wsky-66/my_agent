@@ -62,6 +62,9 @@ class Config:
         self.GRASP_SCORE_MIN = float(os.getenv("GRASP_SCORE_MIN", "0"))
         self.SHUTDOWN_SLEEP_TIMEOUT = float(os.getenv("SHUTDOWN_SLEEP_TIMEOUT", "30"))
         self.SLEEP_JOINT_TOLERANCE = float(os.getenv("SLEEP_JOINT_TOLERANCE", "0.03"))
+        self.ARM_MAX_JOINT_CHANGE = float(os.getenv("ARM_MAX_JOINT_CHANGE", "2.6"))
+        self.ARM_VELOCITY_SCALING = float(os.getenv("ARM_VELOCITY_SCALING", "0.25"))
+        self.ARM_MOTION_TIMEOUT = float(os.getenv("ARM_MOTION_TIMEOUT", "45"))
         for key in ("ARM_AUTO_START", "CAM_AUTO_START", "ENABLE_ARM", "ENABLE_CAMERA", "ENABLE_VISION", "ENABLE_VOICE"):
             setattr(self, key, _flag(key))
 
@@ -75,6 +78,8 @@ class Config:
             raise ValueError("GRASP_SCORE_MIN 必须在 0~1 之间。")
         if not math.isfinite(self.SLEEP_JOINT_TOLERANCE) or not 0 < self.SLEEP_JOINT_TOLERANCE <= .1:
             raise ValueError("SLEEP_JOINT_TOLERANCE 必须在 0~0.1 弧度之间。")
+        from core.motion import MotionPolicy
+        MotionPolicy(self.ARM_MAX_JOINT_CHANGE, self.ARM_VELOCITY_SCALING, self.ARM_MOTION_TIMEOUT)
 
 
 config = Config()

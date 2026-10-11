@@ -18,11 +18,11 @@ def robot_evidence():
                 driver_joints=ARM_JOINTS,
                 controllers={"arm_controller": "active", "gripper_controller": "active"},
                 actions={"arm_controller": True, "gripper_controller": True},
-                planning={"ik": True, "cartesian": True})
+                planning={"ik": True, "cartesian": True, "joint_path": True})
 
 
 def test_planning_services_alone_do_not_mean_connected():
-    result = robot_readiness(None, 10, [], {}, {}, {"ik": True, "cartesian": True})
+    result = robot_readiness(None, 10, [], {}, {}, {"ik": True, "cartesian": True, "joint_path": True})
     assert not result.ok and not result.data["ready"]
     assert result.data["checks"]["planning_services"]
     assert not result.data["checks"]["joint_feedback"]
@@ -35,6 +35,7 @@ def test_planning_services_alone_do_not_mean_connected():
     {"driver_joints": []}, {"controllers": {"arm_controller": "inactive", "gripper_controller": "active"}},
     {"actions": {"arm_controller": False, "gripper_controller": True}},
     {"planning": {"ik": False, "cartesian": True}},
+    {"planning": {"ik": True, "cartesian": True}},
 ])
 def test_robot_requires_live_complete_feedback_and_control(change):
     assert not robot_readiness(**{**robot_evidence(), **change}).ok
@@ -147,7 +148,7 @@ def test_health_worker_queries_driver_and_controller_without_motion(monkeypatch)
         'rclpy.action': NS(ActionClient=Action), 'sensor_msgs.msg': NS(JointState=object()),
         'controller_manager_msgs.srv': NS(ListControllers=RequestType),
         'interbotix_xs_msgs.srv': NS(RobotInfo=RequestType),
-        'moveit_msgs.srv': NS(GetPositionIK=RequestType, GetCartesianPath=RequestType),
+        'moveit_msgs.srv': NS(GetPositionIK=RequestType, GetCartesianPath=RequestType, GetMotionPlan=RequestType),
         'control_msgs.action': NS(FollowJointTrajectory=object()),
     }
     for name, module in modules.items():

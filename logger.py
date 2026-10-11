@@ -43,6 +43,15 @@ def record_timing(stage, elapsed, ok=True):
     }, ensure_ascii=False))
 
 
+def record_motion(event):
+    """Local diagnostics contain joint data only; log failure never retries motion."""
+    try:
+        _get("agent.motion", "motion.jsonl").info(json.dumps({"timestamp": time.time(), **event},
+                                                           ensure_ascii=False, allow_nan=False))
+    except (OSError, TypeError, ValueError):
+        pass
+
+
 @contextmanager
 def measure(stage):
     start = time.monotonic()

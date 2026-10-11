@@ -4,7 +4,7 @@ from services import arm
 from core.results import ToolResult
 
 
-@registry.register(description="末端移动：x/y/z 为 base_link 下的米；roll/pitch/yaw 为度，需同时给出。无朝向保持当前朝向走笛卡尔直线，有朝向走 IK。")
+@registry.register(description="末端移动：x/y/z 为 base_link 下的米；roll/pitch/yaw 为度，需同时给出。无朝向保持当前朝向走笛卡尔直线；有朝向筛选近端逆解并规划完整轨迹，异常转角或规划失败时停止。")
 def move_arm(x: float, y: float, z: float, roll: float = None, pitch: float = None, yaw: float = None) -> ToolResult:
     if any(v is not None for v in (roll, pitch, yaw)) and any(v is None for v in (roll, pitch, yaw)):
         return ToolResult.failure("INVALID_ARGUMENT", "roll/pitch/yaw 需同时给出或都不给")

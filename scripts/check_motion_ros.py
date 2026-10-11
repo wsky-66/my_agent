@@ -1,0 +1,157 @@
+"""Synthetic pose-motion checks in isolated ROS domain 218; no device access."""
+import os
+os.environ["ROS_DOMAIN_ID"] = "218"
+os.environ["ROS_LOCALHOST_ONLY"] = "1"
+import math
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import threading
+import time
+from types import SimpleNamespace as NS
+import rclpy
+from rclpy.action import ActionServer
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import JointState
+from trajectory_msgs.msg import JointTrajectoryPoint
+from interbotix_xs_msgs.srv import RobotInfo
+from moveit_msgs.srv import GetPositionIK, GetMotionPlan
+from control_msgs.action import FollowJointTrajectory
+from core.health import ARM_JOINTS, fresh_joints
+from workers.pose_motion import PoseMotion
+
+PREFIX = "/my_agent_motion_test"
+
+
+class Simulator(Node):
+    def __init__(self):
+        super().__init__("pose_motion_simulator")
+        self.positions = [0.]*6
+        self.scenario, self.iks, self.plans, self.goals = "normal", 0, 0, 0
+        self.publisher = self.create_publisher(JointState, PREFIX+"/joint_states", qos_profile_sensor_data)
+        self.create_timer(.02, self.publish)
+        self.create_service(RobotInfo, PREFIX+"/get_robot_info", self.info)
+        self.create_service(GetPositionIK, "/compute_ik", self.ik)
+        self.create_service(GetMotionPlan, "/plan_kinematic_path", self.plan)
+        self.action = ActionServer(self, FollowJointTrajectory, PREFIX+"/arm_controller/follow_joint_trajectory", self.execute)
+
+    def publish(self):
+        msg = JointState()
+        msg.name, msg.position, msg.velocity = list(ARM_JOINTS), self.positions, [0.]*6
+        msg.header.stamp = self.get_clock().now().to_msg()
+        self.publisher.publish(msg)
+
+    def info(self, request, response):
+        assert request.cmd_type == "group" and request.name == "arm"
+        response.mode, response.joint_names = "position", list(ARM_JOINTS)
+        response.joint_lower_limits, response.joint_upper_limits = [-math.pi+1e-5]*6, [math.pi-1e-5]*6
+        response.joint_velocity_limits = [3.14]*6
+        return response
+
+    def ik(self, request, response):
+        ir = request.ik_request
+        assert ir.avoid_collisions and ir.robot_state.is_diff and len(ir.constraints.joint_constraints) == 6
+        assert ir.pose_stamped.header.frame_id == PREFIX[1:]+"/base_link"
+        assert ir.timeout.nanosec == 350_000_000
+        values = [0.]*6
+        values[-1] = math.radians(-170) if self.scenario == "wrap" else (1.8, .2, .8)[self.iks%3]
+        self.iks += 1
+        response.error_code.val = 1
+        response.solution.joint_state.name, response.solution.joint_state.position = list(ARM_JOINTS), values
+        return response
+
+    def plan(self, request, response):
+        self.plans += 1
+        motion = request.motion_plan_request
+        assert motion.num_planning_attempts == 1 and motion.start_state.is_diff
+        assert motion.max_velocity_scaling_factor == motion.max_acceleration_scaling_factor == .25
+        assert len(motion.path_constraints.joint_constraints) == 6
+        target = [j.position for j in motion.goal_constraints[0].joint_constraints]
+        assert abs(target[-1]-.2) < 1e-6, target
+        planned = response.motion_plan_response
+        planned.error_code.val = -1 if self.scenario == "fail" else 1
+        planned.trajectory.joint_trajectory.joint_names = list(ARM_JOINTS)
+        values = [self.positions, target]
+        times = [0, 2]
+        if self.scenario == "loop":
+            detour = list(self.positions)
+            detour[-1] = 1.1
+            values, times = [self.positions, detour, self.positions, target], [0,2,4,5]
+        for positions, seconds in zip(values, times):
+            point = JointTrajectoryPoint()
+            point.positions, point.time_from_start.sec = list(positions), seconds
+            planned.trajectory.joint_trajectory.points.append(point)
+        return response
+
+    def execute(self, handle):
+        self.goals += 1
+        assert len(handle.request.trajectory.points) >= 2
+        self.positions = list(handle.request.trajectory.points[-1].positions)
+        handle.succeed()
+        result = FollowJointTrajectory.Result()
+        result.error_code = 0
+        return result
+
+
+class Client(Node):
+    def __init__(self):
+        super().__init__("pose_motion_test_client")
+        self._feedback = None
+        self.opts = {"robot_name": PREFIX[1:], "motion_timeout": 15.}
+        self.create_subscription(JointState, PREFIX+"/joint_states", self.on_state, qos_profile_sensor_data)
+
+    def on_state(self, message):
+        self._feedback = time.monotonic(), message
+
+    def arm(self):
+        return NS(node=self, ee_frame=PREFIX[1:]+"/ee_gripper_link", parent_frame=PREFIX[1:]+"/base_link")
+
+    def joint(self):
+        return self
+
+    def get_joints(self, timeout=1.):
+        until = time.monotonic()+timeout
+        while time.monotonic() < until:
+            if fresh_joints(self._feedback, time.monotonic()):
+                return dict(zip(self._feedback[1].name, self._feedback[1].position))
+            time.sleep(.02)
+        return None
+
+
+rclpy.init()
+simulator, client = Simulator(), Client()
+executor = MultiThreadedExecutor(num_threads=4)
+executor.add_node(simulator)
+executor.add_node(client)
+thread = threading.Thread(target=executor.spin, daemon=True)
+thread.start()
+motion = PoseMotion(client)
+try:
+    first = motion.move([.3,0.,.2], [0.,50.,0.])
+    assert first.ok and abs(first.data["target"]["wrist_rotate"]-.2) < 1e-6, first.to_json()
+    assert simulator.goals == simulator.plans == 1 and simulator.iks == 3
+    simulator.scenario, simulator.positions = "wrap", [0.]*5+[math.radians(170)]
+    time.sleep(.1)
+    wrapped = motion.move([.3,0.,.2], [0.,50.,0.])
+    assert wrapped.error_code == "IK_BRANCH_REJECTED", wrapped.to_json()
+    assert simulator.goals == simulator.plans == 1
+    simulator.scenario, simulator.positions = "loop", [0.]*6
+    time.sleep(.1)
+    loop = motion.move([.3,0.,.2], [0.,50.,0.])
+    assert loop.error_code == "MOTION_EXCESS_ROTATION", loop.to_json()
+    assert simulator.goals == 1
+    simulator.scenario = "fail"
+    failed = motion.move([.3,0.,.2], [0.,50.,0.])
+    assert failed.error_code == "MOTION_PLAN_FAILED", failed.to_json()
+    assert simulator.goals == 1
+    print("ROS 模拟验证通过：选择近端逆解并规划执行；跨角度边界、绕路和规划失败均未发送动作。")
+finally:
+    motion.close()
+    executor.shutdown(timeout_sec=2)
+    thread.join(timeout=2)
+    simulator.action.destroy()
+    client.destroy_node()
+    simulator.destroy_node()
+    rclpy.shutdown()

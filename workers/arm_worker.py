@@ -78,46 +78,11 @@ class ArmBackend:
                                                      "frame": self.arm().parent_frame})
 
     def ik_move(self, xyz, rpy):
-        """Reuse the joint client; legacy clients shut down the entire ROS context on exit."""
-        import rclpy
-        from builtin_interfaces.msg import Duration
-        from moveit_msgs.srv import GetPositionIK
-        from scipy.spatial.transform import Rotation
-        arm = self.arm()
-        if not hasattr(arm, "_ik"):
-            arm._ik = arm.node.create_client(GetPositionIK, "/compute_ik")
-        if not arm._ik.wait_for_service(timeout_sec=5):
-            return False, "compute_ik 服务未就绪"
-        req = GetPositionIK.Request()
-        ir = req.ik_request
-        ir.group_name, ir.ik_link_name = "interbotix_arm", arm.ee_frame
-        ir.pose_stamped.header.frame_id = arm.parent_frame
-        p = ir.pose_stamped.pose
-        p.position.x, p.position.y, p.position.z = xyz
-        q = Rotation.from_euler("xyz", rpy, degrees=True).as_quat()
-        p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w = map(float, q)
-        ir.timeout = Duration(sec=2)
-        ir.avoid_collisions = True
-        current = self.joint().get_joints()
-        if not current or any(n not in current for n in arm.ARM_JOINTS):
-            return False, "无法读取关节状态"
-        ir.robot_state.joint_state.name = list(current)
-        ir.robot_state.joint_state.position = list(current.values())
-        future = arm._ik.call_async(req)
-        deadline = time.monotonic() + 25
-        while not future.done() and rclpy.ok() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        if not future.done():
-            return False, "compute_ik 超时"
-        res = future.result()
-        if res is None or res.error_code.val != 1:
-            return False, "compute_ik 无解，目标位姿不可达"
-        js = res.solution.joint_state
-        joints = {n: float(p) for n, p in zip(js.name, js.position) if n in arm.ARM_JOINTS}
-        if len(joints) != len(arm.ARM_JOINTS):
-            return False, "compute_ik 关节结果不完整"
-        ok = self.joint().set_joints(joints)
-        return ok, "" if ok else "关节执行失败"
+        """Choose a nearby bounded IK branch, then plan and validate a full path."""
+        if not hasattr(self, "_pose_motion"):
+            from workers.pose_motion import PoseMotion
+            self._pose_motion = PoseMotion(self)
+        return self._pose_motion.move(xyz, rpy)
 
     def __call__(self, action, args):
         if action == "get_arm_pose":
@@ -126,6 +91,7 @@ class ArmBackend:
             data = self.joint().get_joints()
             return ToolResult.success("已读取关节角度（弧度）", data) if data else ToolResult.failure("JOINT_STATE_UNAVAILABLE", "未收到关节状态")
         if action == "move_arm":
+            motion = None
             xyz = [float(args[k]) for k in ("x", "y", "z")]
             rpy = [args.get(k) for k in ("roll", "pitch", "yaw")]
             if not all(math.isfinite(x) for x in xyz):
@@ -137,7 +103,10 @@ class ArmBackend:
                 rpy = [float(v) for v in rpy]
                 if not all(math.isfinite(v) for v in rpy):
                     raise ValueError("朝向必须为有限数字")
-                ok, msg = self.ik_move(xyz, rpy)
+                motion = self.ik_move(xyz, rpy)
+                if not motion.ok:
+                    return motion
+                ok, msg = True, ""
             else:
                 ok, msg = self.arm()._move_group_move(*xyz)
             if not ok:
@@ -146,6 +115,19 @@ class ArmBackend:
             if not actual.ok:
                 return actual
             dev = max(abs(a-b) for a, b in zip(actual.data["position"], xyz))
+            if motion is not None:
+                from scipy.spatial.transform import Rotation
+                from logger import record_motion
+                desired = Rotation.from_euler("xyz", rpy, degrees=True)
+                measured = Rotation.from_euler("xyz", actual.data["rpy"], degrees=True)
+                angle = math.degrees((desired.inv()*measured).magnitude())
+                data = {**actual.data, "motion": motion.data, "orientation_error_deg": angle}
+                record_motion({"stage": "pose_checked", "position": xyz, "rpy": rpy,
+                    "actual_pose": actual.data, "position_error_m": dev, "orientation_error_deg": angle,
+                    "ok": dev <= .02 and angle <= 5})
+                if dev > .02 or angle > 5:
+                    return ToolResult.failure("POSE_DEVIATION", "实际位置或朝向未到目标，停止后续动作", data)
+                return ToolResult.success("末端已按规划轨迹到目标位置和朝向", data)
             if dev > 0.07:
                 return ToolResult.failure("POSITION_DEVIATION", f"实际位置偏差 {dev:.3f}m，未确认到位", actual.data)
             return ToolResult.success("末端已到目标位置", actual.data)
@@ -174,6 +156,8 @@ class ArmBackend:
 
     def close(self):
         # Release each node without an individual client shutting down other clients' context.
+        if hasattr(self, "_pose_motion"):
+            self._pose_motion.close()
         for client in self.clients.values():
             client._running = False
             client._spin.join(timeout=1)

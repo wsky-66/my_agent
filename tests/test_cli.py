@@ -2,6 +2,10 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import signal
+import select
+import time
+import pytest
 from types import SimpleNamespace as NS
 
 from main import _split_image_arg, run_turn
@@ -77,3 +81,74 @@ def test_reply_without_content_chunks_displays_text_and_speaks(monkeypatch, caps
     run_turn(NS(stream=stream), '查询任务', voice=NS(speak_async=spoken.append))
     assert capsys.readouterr().out.count('动作已完成。') == 1
     assert spoken == ['动作已完成。']
+
+
+def test_sigterm_runs_clean_exit_without_hardware():
+    env = {**os.environ, 'LLM_API_KEY':'test-placeholder', 'NO_COLOR':'1'}
+    proc = subprocess.Popen([sys.executable, '-u', 'main.py', '--no-hardware', '--text-only'],
+        cwd=ROOT, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    output = b''
+    try:
+        until = time.monotonic()+10
+        while '你 ›'.encode() not in output and time.monotonic() < until:
+            if select.select([proc.stdout], [], [], .1)[0]:
+                data = os.read(proc.stdout.fileno(), 4096)
+                if not data:
+                    break
+                output += data
+        assert '你 ›'.encode() in output, output.decode()
+        proc.send_signal(signal.SIGTERM)
+        remaining, errors = proc.communicate(timeout=10)
+        output += remaining
+        assert proc.returncode == 0, errors.decode()
+        assert '退出清理完成' in output.decode() and '会话结束' in output.decode()
+        from core.hardware_processes import SessionLock
+        lock = SessionLock(ROOT/'logs/session.lock')
+        lock.close()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+
+
+@pytest.mark.parametrize('signum', [signal.SIGTERM, signal.SIGHUP])
+def test_termination_during_a_task_exits_without_waiting_for_more_input(signum):
+    script = """import sys,time
+import agent
+from agent import AgentEvent
+from main import main
+class FakeAgent:
+    def stream(self,*args):
+        print('BUSY_READY',flush=True)
+        time.sleep(60)
+        yield AgentEvent('response', text='done')
+agent.Agent=FakeAgent
+sys.argv=['main.py','--no-hardware','--text-only']
+sys.exit(main() or 0)
+"""
+    env = {**os.environ, 'LLM_API_KEY':'test-placeholder', 'NO_COLOR':'1'}
+    proc = subprocess.Popen([sys.executable,'-u','-c',script], cwd=ROOT, env=env,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    output = b''
+    try:
+        proc.stdin.write('开始任务\n'.encode())
+        proc.stdin.flush()
+        until = time.monotonic()+10
+        while b'BUSY_READY' not in output and time.monotonic() < until:
+            if select.select([proc.stdout],[],[],.1)[0]:
+                data = os.read(proc.stdout.fileno(),4096)
+                if not data:
+                    break
+                output += data
+        assert b'BUSY_READY' in output, output.decode()
+        proc.send_signal(signum)
+        # Keep stdin open: a swallowed signal must not be hidden by an EOF exit.
+        proc.wait(timeout=5)
+        tail, errors = proc.communicate()
+        output += tail
+        assert proc.returncode == 0, errors.decode()
+        assert '退出清理完成' in output.decode() and '会话结束' in output.decode()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()

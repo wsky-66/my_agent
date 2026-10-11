@@ -60,17 +60,21 @@ class Config:
         self.TTS_VOICE = os.getenv("TTS_VOICE", "zh-CN-YunxiNeural")
         self.SCENE_MAX_AGE = float(os.getenv("SCENE_MAX_AGE", "300"))
         self.GRASP_SCORE_MIN = float(os.getenv("GRASP_SCORE_MIN", "0"))
+        self.SHUTDOWN_SLEEP_TIMEOUT = float(os.getenv("SHUTDOWN_SLEEP_TIMEOUT", "30"))
+        self.SLEEP_JOINT_TOLERANCE = float(os.getenv("SLEEP_JOINT_TOLERANCE", "0.03"))
         for key in ("ARM_AUTO_START", "CAM_AUTO_START", "ENABLE_ARM", "ENABLE_CAMERA", "ENABLE_VISION", "ENABLE_VOICE"):
             setattr(self, key, _flag(key))
 
     def validate(self):
         if not self.API_KEY:
             raise ValueError("LLM_API_KEY 未设置，请在项目 .env 中配置。")
-        times = (self.LLM_TIMEOUT, self.SHELL_TIMEOUT, self.SCENE_MAX_AGE)
+        times = (self.LLM_TIMEOUT, self.SHELL_TIMEOUT, self.SCENE_MAX_AGE, self.SHUTDOWN_SLEEP_TIMEOUT)
         if self.MAX_TOOL_ROUNDS < 1 or any(not math.isfinite(v) or v <= 0 for v in times):
             raise ValueError("工具轮数和超时必须为正数。")
         if not math.isfinite(self.GRASP_SCORE_MIN) or not 0 <= self.GRASP_SCORE_MIN <= 1:
             raise ValueError("GRASP_SCORE_MIN 必须在 0~1 之间。")
+        if not math.isfinite(self.SLEEP_JOINT_TOLERANCE) or not 0 < self.SLEEP_JOINT_TOLERANCE <= .1:
+            raise ValueError("SLEEP_JOINT_TOLERANCE 必须在 0~0.1 弧度之间。")
 
 
 config = Config()

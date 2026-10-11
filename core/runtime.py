@@ -11,7 +11,7 @@ import time
 import uuid
 
 from core.results import ToolResult
-from core.execution import is_cancelled
+from core.execution import is_cancelled, shutdown_requested
 from logger import record_timing
 
 
@@ -80,10 +80,14 @@ class JsonWorker:
                             responses.put({"protocol_error": "无效的 JSON 响应"})
             finally:
                 responses.put({"protocol_error": "服务进程退出"})
+                proc.stdout.close()
 
         def read_errors():
-            for line in proc.stderr:
-                errors.append(line.rstrip())
+            try:
+                for line in proc.stderr:
+                    errors.append(line.rstrip())
+            finally:
+                proc.stderr.close()
 
         self._threads = [threading.Thread(target=read, daemon=True), threading.Thread(target=read_errors, daemon=True)]
         for thread in self._threads:
@@ -99,8 +103,10 @@ class JsonWorker:
                 raise RuntimeError(f"{self.name} 启动失败或超时: {detail}")
         record_timing(f"worker.{self.name}.startup", time.monotonic() - start)
 
-    def request(self, action, params=None):
+    def request(self, action, params=None, *, allow_shutdown=False):
         with self._lock:
+            if shutdown_requested.is_set() and not allow_shutdown:
+                return ToolResult.failure("SESSION_CLOSING", "程序正在退出，拒绝新请求")
             if is_cancelled():
                 return ToolResult.failure("TASK_CANCELLED", "任务已中断")
             start = time.monotonic()
@@ -149,18 +155,32 @@ class JsonWorker:
                               result.ok if result else False)
             return result
 
-    def _stop(self):
+    def _stop(self, *, graceful=False):
         proc, self.proc = self.proc, None
         self._ready.clear()
+        if graceful and proc and proc.stdin:
+            # EOF runs the worker's close hook; ROS SIGTERM handlers alone may
+            # only shut down the context while leaving serve() waiting on stdin.
+            try:
+                proc.stdin.close()
+                proc.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
         terminate(proc)
-        for thread in self._threads:
+        readers = self._threads
+        for thread in readers:
             thread.join(timeout=1)
         self._threads = []
         if proc:
-            for stream in (proc.stdin, proc.stdout, proc.stderr):
-                if stream:
+            if proc.stdin:
+                proc.stdin.close()
+            for index, stream in enumerate((proc.stdout, proc.stderr)):
+                # A detached descendant can retain a pipe. Closing TextIO from
+                # here would wait forever on the reader lock; its reader owns
+                # final closure after the hardware sweep terminates descendants.
+                if stream and (index >= len(readers) or not readers[index].is_alive()):
                     stream.close()
 
     def stop(self):
         with self._lock:
-            self._stop()
+            self._stop(graceful=True)

@@ -148,12 +148,21 @@ def main():
         if isinstance(exc, ImportError):
             ui.notice("请在当前环境运行 python3 -m pip install -r requirements.txt 补齐依赖", False)
         return 1
+    try:
+        lifecycle.begin_session()
+    except RuntimeError as exc:
+        ui.error(str(exc))
+        return 1
     ui.banner(config.MODEL, config.BASE_URL, len(registry.list_tools()))
+    exit_requested = False
 
     def on_term(signum, frame):
+        nonlocal exit_requested
+        exit_requested = True
         raise KeyboardInterrupt
 
-    signal.signal(signal.SIGTERM, on_term)
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, on_term)
     try:
         if config.ENABLE_ARM and config.ARM_AUTO_START:
             ui.notice("正在连接机械臂…")
@@ -166,7 +175,7 @@ def main():
         if voice:
             voice.start_async()
             ui.notice("语音后台加载中 · Tab 开始说话")
-        while True:
+        while not exit_requested:
             try:
                 text = voice.term_input(ui.input_prompt()) if voice else input(ui.input_prompt()).strip()
             except (EOFError, KeyboardInterrupt):
@@ -238,10 +247,24 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        if voice:
-            voice.close()
-        lifecycle.close_all()
-        ui.notice("会话结束")
+        # A second interrupt aborts parking but still allows process cleanup to finish.
+        def interrupt_cleanup(signum, frame):
+            lifecycle.abort_parking()
+
+        signal.signal(signal.SIGINT, interrupt_cleanup)
+        signal.signal(signal.SIGTERM, interrupt_cleanup)
+        signal.signal(signal.SIGHUP, interrupt_cleanup)
+        try:
+            if voice:
+                try:
+                    voice.close()
+                except (Exception, KeyboardInterrupt) as exc:
+                    ui.notice(f"语音退出失败：{exc}，继续清理硬件", False)
+        finally:
+            result = lifecycle.close_all(notify=ui.notice)
+            ui.notice(result.message, result.ok)
+            ui.notice("会话结束")
+    return 0 if result.ok else 1
 
 
 if __name__ == "__main__":

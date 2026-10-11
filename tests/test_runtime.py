@@ -99,3 +99,51 @@ def test_termination_cleans_descendants_after_launch_leader_exits(tmp_path):
         assert not stat.exists() or stat.read_text().split()[2] == 'Z'
     finally:
         terminate(leader)
+
+
+def test_normal_stop_runs_backend_close_hook_before_forcing_exit(tmp_path):
+    marker = tmp_path/'backend.closed'
+    script = f"""from pathlib import Path
+from core.results import ToolResult
+from workers.protocol import serve
+serve(lambda action, args: ToolResult.success('ready'), lambda: Path({str(marker)!r}).touch())
+"""
+    worker = JsonWorker('test', [sys.executable, '-u', '-c', script])
+    try:
+        assert worker.request('fast').ok
+        proc = worker.proc
+        worker.stop()
+        assert marker.exists() and proc.poll() is not None
+    finally:
+        worker.stop()
+
+
+def test_detached_child_holding_pipes_does_not_block_worker_stop(tmp_path):
+    from core.hardware_processes import HardwareSweep
+    child = 'import time; time.sleep(60)'
+    script = f"""import subprocess,sys
+from core.results import ToolResult
+from workers.protocol import serve
+p=subprocess.Popen([sys.executable,'-c',{child!r}],start_new_session=True)
+serve(lambda action,args: ToolResult.success('ready',{{'child':p.pid}}))
+"""
+    worker = JsonWorker('test', [sys.executable, '-u', '-c', script])
+    sweep = HardwareSweep('wx250s','/camera/camera',tmp_path,arm=False,camera=False)
+    captured = {}
+    try:
+        response = worker.request('fast')
+        assert response.ok
+        proc = worker.proc
+        captured = sweep.targets([proc.pid])
+        assert response.data['child'] in captured
+        started = time.monotonic()
+        worker.stop()
+        assert time.monotonic()-started < 4
+        assert sweep.clean(captured,grace=.1).ok
+        until = time.monotonic()+1
+        while not proc.stdout.closed and time.monotonic() < until:
+            time.sleep(.02)
+        assert proc.stdout.closed and proc.stderr.closed
+    finally:
+        worker.stop()
+        sweep.clean(captured,grace=.1)

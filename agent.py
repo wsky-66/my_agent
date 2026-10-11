@@ -13,7 +13,7 @@ import uuid
 
 from openai import OpenAI
 from config import config
-from core.execution import ExecutionContext, current
+from core.execution import ExecutionContext, current, begin_task, end_task
 from core.results import ToolResult
 from logger import error, record_timing, turn_id
 from tools import registry
@@ -64,10 +64,15 @@ class Agent:
         inherited = copy_context()
 
         def run():
+            if not begin_task(context):
+                result.append(ToolResult.failure("SESSION_CLOSING", "程序正在退出，拒绝新任务"))
+                return
             try:
                 result.append(self.registry.execute_result(name, args))
             except BaseException as exc:
                 result.append(ToolResult.failure("TASK_CANCELLED", str(exc) or "任务中断"))
+            finally:
+                end_task(context)
 
         thread = threading.Thread(target=lambda: inherited.run(run), daemon=True)
         thread.start()

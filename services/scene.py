@@ -83,7 +83,8 @@ def scan(labels, grasp_labels=None):
             continue
         best = hits[0]
         rec.update(bbox=best["bbox"], detection_score=best.get("score", 0))
-        items.append({"label": label, "box": best["bbox"], "out": str(folder / "masks" / f"object_{i}.png")})
+        items.append({"label": label, "box": best["bbox"], "dilate_cm": 0,
+                      "out": str(folder / "masks" / f"object_{i}.png")})
     if items:
         with measure("vision.segmentation"):
             segmented = segmentation.batch(snapshot["image_path"], items)
@@ -99,14 +100,15 @@ def scan(labels, grasp_labels=None):
                 rec.update(ok=True, base_xyz=located.data["position"], size=located.data["size"])
             else:
                 rec.update(error_code=located.error_code, error=located.message)
-        picks = [{"label": lb, "mask_path": r["mask_path"]} for lb, r in records.items()
+        picks = [{"label": lb, "mask_path": r["mask_path"], "box": r["bbox"]} for lb, r in records.items()
                  if lb in pick_labels and r["ok"]]
         with measure("vision.grasp"):
-            inferred = grasp.infer(picks, snapshot, score_min=config.GRASP_SCORE_MIN)
+            inferred = grasp.infer(picks, snapshot, top=8, score_min=config.GRASP_SCORE_MIN)
         for item in picks:
             rec = records[item["label"]]
             if inferred.ok:
                 rec["grasps"] = inferred.data.get(item["label"], [])
+                rec["grasp_diagnostics"] = inferred.data.get("_diagnostics", {}).get(item["label"], {})
             else:
                 rec["grasp_error"] = inferred.message
     if is_cancelled():

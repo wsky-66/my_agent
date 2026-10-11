@@ -19,6 +19,7 @@ _cursor_open = False
 _reply_open = False
 _LOCK = threading.RLock()
 LABELS = {"execute_pick_place": "执行抓放任务", "scan_objects": "预扫场景", "move_arm": "移动末端",
+          "inspect_grasps": "预检抓取路径",
           "gripper_set": "调整夹爪", "go_sleep": "收拢机械臂", "go_home": "机械臂复位",
           "recognize_camera": "理解画面", "detect_grounding": "定位物体", "segment_mask": "分割物体",
           "detect_grasp": "推理抓取姿态", "object_position": "计算三维位置"}

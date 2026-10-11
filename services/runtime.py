@@ -12,8 +12,10 @@ def ros_command(args, workspace=False):
     return ["bash", "-c", body]
 
 
-def worker(name, python, options=None, *, ros=False, workspace=False, timeout=90):
+def worker(name, python, options=None, *, ros=False, workspace=False, timeout=90,env=None):
     args = [python, "-u", "-m", f"workers.{name}_worker", "--options", json.dumps(options or {})]
+    if env:
+        args=["env",*[f"{key}={value}" for key,value in env.items()],*args]
     return JsonWorker(name, ros_command(args, workspace) if ros else args, timeout=timeout)
 
 

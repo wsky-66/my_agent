@@ -20,7 +20,7 @@ def sam2_status() -> ToolResult:
     return ToolResult.success("SAM2 运行中" if segmentation.client.ready() else "SAM2 未运行")
 
 
-@registry.register(description="用像素框 box 或正负点生成物体 mask。image_path 应使用检测返回的同一张图；out 指定保存路径。无框和点时支持原有交互点击。dilate_cm 为膨胀距离（厘米），默认 1。")
+@registry.register(description="用像素框 box 或正负点生成严格物体 mask。image_path 应使用检测返回的同一张图；out 指定保存路径。无框和点时支持原有交互点击。dilate_cm 默认为 0，抓取上下文由推理端另行构造。")
 def segment_mask(pos_points: list[list[float]] = None, neg_points: list[list[float]] = None,
                  box: list[float] = None, image_path: str = None, dilate_cm: float = None,
                  out: str = None) -> ToolResult:

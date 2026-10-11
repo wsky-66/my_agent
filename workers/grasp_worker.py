@@ -1,5 +1,4 @@
 """Load GraspNet once; infer all masks using the supplied immutable RGB-D scene."""
-from types import SimpleNamespace
 import sys
 
 from core.results import ToolResult
@@ -9,12 +8,13 @@ from workers.protocol import options, serve
 class GraspBackend:
     def __init__(self, opts):
         sys.path.insert(0, opts["controller_dir"])
+        self.opts = opts
         self.model = None
+        self.pipeline = None
 
     def __call__(self, action, params):
         import cv2
         import numpy as np
-        import torch
         import graspnet_client as backend
         if action != "infer":
             raise ValueError("未知 GraspNet 动作")
@@ -28,14 +28,19 @@ class GraspBackend:
             raise ValueError("彩色与深度尺寸不一致")
         k = snapshot["intrinsics"]
         transform = np.asarray(snapshot["extrinsics"], dtype=float)
-        if transform.shape != (4, 4) or not np.isfinite(transform).all():
-            raise ValueError("标定矩阵无效")
+        from core.grasp_geometry import rigid_transform
+        from workers.grasp_pipeline import GraspRejected, TabletopPipeline
+        transform = rigid_transform(transform)
+        if len(k)!=9 or not np.isfinite(k).all() or k[0]<=0 or k[4]<=0:
+            raise ValueError("相机内参无效")
+        score_min = float(params.get("score_min", 0))
+        if not np.isfinite(score_min) or not 0 <= score_min <= 1:
+            raise ValueError("score_min 必须在 0~1 之间")
         if self.model is None:
             self.model = backend.load_model()
-        args = SimpleNamespace(top=max(1, min(int(params.get("top", 3)), 50)),
-                               no_collision=params.get("no_collision", False), no_z=False,
-                               score_min=float(params.get("score_min", 0)), grip_z_min=backend.GRIP_Z_MIN)
-        result = {}
+        if self.pipeline is None:
+            self.pipeline = TabletopPipeline(backend, self.model, self.opts)
+        masks = []
         for item in params["items"]:
             label, mask_path = item["label"], item.get("mask_path")
             mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE) if mask_path else None
@@ -43,17 +48,21 @@ class GraspBackend:
                 raise ValueError(f"{label} mask 尺寸不匹配")
             if mask is not None:
                 mask = mask > 0
-            np.random.seed(0)
-            torch.manual_seed(0)
-            gg, _ = backend.run_pipeline(*self.model, color, depth, k[0], k[4], k[2], k[5], transform, mask, args)
-            grasps = []
-            from scipy.spatial.transform import Rotation
-            for i in range(len(gg)):
-                rpy = Rotation.from_matrix(gg.rotation_matrices[i]).as_euler("xyz", degrees=True)
-                rpy = backend.normalize_rpy(*rpy)
-                grasps.append({"rank": i, "score": float(gg.scores[i]), "position": gg.translations[i].tolist(),
-                               "rpy": list(map(float, rpy)), "width": float(gg.widths[i])})
-            result[label] = grasps
+            masks.append(mask)
+        try:
+            self.pipeline.prepare(color, depth, k, transform, masks)
+        except GraspRejected as exc:
+            return ToolResult.failure(exc.code, str(exc))
+        result = {"_diagnostics": {}}
+        for item, mask in zip(params["items"], masks):
+            grasps, diagnostics = self.pipeline.infer(mask, item.get("box"),
+                top=max(1, min(int(params.get("top", 3)), 50)), score_min=score_min,
+                no_collision=bool(params.get("no_collision", False)))
+            for g in grasps:
+                g.update(frame=snapshot["base_frame"], calibration_id=snapshot["calibration_id"],
+                         snapshot_timestamp=snapshot["timestamp"], ee_frame=f"{self.opts['robot_name']}/ee_gripper_link")
+            result[item["label"]] = grasps
+            result["_diagnostics"][item["label"]] = diagnostics
         return ToolResult.success("抓取推理完成", result)
 
 

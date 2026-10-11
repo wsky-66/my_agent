@@ -27,7 +27,7 @@ def mask_matches(mask_path, image_path):
 
 
 def segment(pos_points=None, neg_points=None, box=None, image_path=None, out=None, dilate_cm=None):
-    dilation = 1.0 if dilate_cm is None else dilate_cm
+    dilation = 0.0 if dilate_cm is None else dilate_cm
     if not math.isfinite(dilation) or dilation < 0:
         return ToolResult.failure("INVALID_ARGUMENT", "膨胀距离必须为非负有限数字")
     if image_path is None:

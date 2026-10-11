@@ -83,9 +83,17 @@ def test_reply_without_content_chunks_displays_text_and_speaks(monkeypatch, caps
     assert spoken == ['动作已完成。']
 
 
-def test_sigterm_runs_clean_exit_without_hardware():
+def test_sigterm_runs_clean_exit_without_hardware(tmp_path):
     env = {**os.environ, 'LLM_API_KEY':'test-placeholder', 'NO_COLOR':'1'}
-    proc = subprocess.Popen([sys.executable, '-u', 'main.py', '--no-hardware', '--text-only'],
+    # Isolate lock assertions from an actual robot session running in ROOT.
+    script = """import sys
+from pathlib import Path
+from config import config
+config.ROOT=Path(sys.argv.pop(1))
+from main import main
+sys.exit(main() or 0)
+"""
+    proc = subprocess.Popen([sys.executable, '-u', '-c', script, str(tmp_path), '--no-hardware', '--text-only'],
         cwd=ROOT, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     output = b''
     try:
@@ -103,7 +111,7 @@ def test_sigterm_runs_clean_exit_without_hardware():
         assert proc.returncode == 0, errors.decode()
         assert '退出清理完成' in output.decode() and '会话结束' in output.decode()
         from core.hardware_processes import SessionLock
-        lock = SessionLock(ROOT/'logs/session.lock')
+        lock = SessionLock(tmp_path/'logs/session.lock')
         lock.close()
     finally:
         if proc.poll() is None:

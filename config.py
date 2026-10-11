@@ -60,6 +60,9 @@ class Config:
         self.TTS_VOICE = os.getenv("TTS_VOICE", "zh-CN-YunxiNeural")
         self.SCENE_MAX_AGE = float(os.getenv("SCENE_MAX_AGE", "300"))
         self.GRASP_SCORE_MIN = float(os.getenv("GRASP_SCORE_MIN", "0"))
+        self.GRIPPER_MESH_DIR = _path("GRIPPER_MESH_DIR", home / "interbotix_ws/install/interbotix_xsarm_descriptions/share/interbotix_xsarm_descriptions/meshes/wx250s_meshes")
+        self.GRASP_CONTEXT_PX = int(os.getenv("GRASP_CONTEXT_PX", "35"))
+        self.GRASP_COLLISION_BUDGET = int(os.getenv("GRASP_COLLISION_BUDGET", "2000"))
         self.SHUTDOWN_SLEEP_TIMEOUT = float(os.getenv("SHUTDOWN_SLEEP_TIMEOUT", "30"))
         self.SLEEP_JOINT_TOLERANCE = float(os.getenv("SLEEP_JOINT_TOLERANCE", "0.03"))
         self.ARM_MAX_JOINT_CHANGE = float(os.getenv("ARM_MAX_JOINT_CHANGE", "2.6"))
@@ -76,6 +79,8 @@ class Config:
             raise ValueError("工具轮数和超时必须为正数。")
         if not math.isfinite(self.GRASP_SCORE_MIN) or not 0 <= self.GRASP_SCORE_MIN <= 1:
             raise ValueError("GRASP_SCORE_MIN 必须在 0~1 之间。")
+        if not 0 <= self.GRASP_CONTEXT_PX <= 100 or not 1 <= self.GRASP_COLLISION_BUDGET <= 10000:
+            raise ValueError("抓取上下文范围需为 0~100 像素，碰撞检查预算需为 1~10000。")
         if not math.isfinite(self.SLEEP_JOINT_TOLERANCE) or not 0 < self.SLEEP_JOINT_TOLERANCE <= .1:
             raise ValueError("SLEEP_JOINT_TOLERANCE 必须在 0~0.1 弧度之间。")
         from core.motion import MotionPolicy

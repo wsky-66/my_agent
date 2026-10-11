@@ -5,7 +5,7 @@ import pytest
 
 from core.health import ARM_JOINTS
 from core.motion import (MotionPolicy, MotionRejected, check_joints, driver_limits,
-                         move_pose, nearest_solution, validate_trajectory)
+                         move_pose, move_cartesian, nearest_solution, validate_trajectory)
 from core.results import ToolResult
 from workers.arm_worker import ArmBackend
 from workers.pose_motion import PoseMotion
@@ -222,3 +222,86 @@ def test_remaining_execution_budget_is_checked_before_sending(monkeypatch):
     with pytest.raises(MotionRejected) as exc:
         motion.execute(trajectory(joints(), joints(.1)), 1)
     assert exc.value.code == "MOTION_PLAN_DURATION"
+
+
+def test_cartesian_path_is_slowed_checked_and_verified():
+    backend=Backend()
+    backend.cartesian_plan=lambda *args: trajectory(backend.start,backend.target,times=[0,1])
+    result=move_cartesian(backend,[.3,0,.2],[0,90,0],MotionPolicy())
+    assert result.ok and result.data['duration']==4
+    assert backend.events==['joints','joints','execute','verify']
+
+
+def test_cartesian_joint_loop_is_rejected_before_controller_dispatch():
+    backend=Backend()
+    backend.cartesian_plan=lambda *args: trajectory(backend.start,joints(1.),backend.start,backend.target)
+    result=move_cartesian(backend,[.3,0,.2],[0,90,0],MotionPolicy())
+    assert result.error_code=='MOTION_EXCESS_ROTATION' and 'execute' not in backend.events
+
+
+def test_cartesian_plan_without_time_parameterisation_stops():
+    backend=Backend()
+    backend.cartesian_plan=lambda *args: trajectory(backend.start,backend.target,times=[0,0])
+    result=move_cartesian(backend,[.3,0,.2],[0,90,0],MotionPolicy())
+    assert result.error_code=='MOTION_PLAN_INVALID' and 'execute' not in backend.events
+
+
+def test_empty_ik_does_not_claim_excessive_joint_rotation():
+    with pytest.raises(MotionRejected) as exc:
+        nearest_solution([], joints(), limits(), MotionPolicy())
+    assert exc.value.code == 'IK_NO_SOLUTION'
+    assert exc.value.data['ik_solutions'] == 0
+
+
+def test_grasp_preflight_tries_next_candidate_without_motion():
+    from core.motion import inspect_grasp_candidates
+    backend=Backend();calls=[]
+    backend.preview_opening=lambda value: calls.append(('opening_preview',value))
+    def solve(xyz,*args):
+        return [] if xyz[0]>.4 else [backend.target]
+    backend.inverse_solutions=solve
+    backend.cartesian_plan=lambda *args: trajectory(backend.target,joints(.3))
+    candidates=[dict(pre_position=[x,0,.15],position=[x,0,.05],rpy=[0,90,0],opening=.03) for x in [.5,.3]]
+    result=inspect_grasp_candidates(backend,candidates,MotionPolicy())
+    assert result.ok and result.data['selected_index']==1
+    assert result.data['attempts'][0]['error_code']=='IK_NO_SOLUTION'
+    assert 'execute' not in backend.events and 'verify' not in backend.events
+    assert calls[-1]==('opening_preview',None)
+
+
+def test_incomplete_descent_in_preflight_never_opens_or_executes():
+    from core.motion import inspect_grasp_candidates
+    backend=Backend();backend.preview_opening=lambda value: None
+    def fail(*args):raise MotionRejected('CARTESIAN_PATH_INCOMPLETE','partial')
+    backend.cartesian_plan=fail
+    c=dict(pre_position=[.3,0,.15],position=[.3,0,.05],rpy=[0,90,0],opening=.03)
+    result=inspect_grasp_candidates(backend,[c],MotionPolicy())
+    assert result.error_code=='NO_REACHABLE_GRASP'
+    assert result.data['attempts'][0]['error_code']=='CARTESIAN_PATH_INCOMPLETE'
+    assert 'execute' not in backend.events
+
+
+def test_preview_finger_state_is_only_present_in_planning_requests():
+    motion=PoseMotion.__new__(PoseMotion)
+    state=NS(joint_state=NS())
+    motion.preview_opening(.035);motion._start_state(state,joints())
+    assert state.joint_state.name[-2:]==['left_finger','right_finger']
+    assert state.joint_state.position[-2:]==[.035,-.035]
+    motion.preview_opening(None);motion._start_state(state,joints())
+    assert state.joint_state.name==list(ARM_JOINTS)
+
+
+@pytest.mark.parametrize('error,expected', [(-31,'IK_NO_SOLUTION'),(-18,'IK_REQUEST_INVALID'),(1,'IK_RESPONSE_INVALID')])
+def test_ik_solver_error_codes_are_preserved(monkeypatch,error,expected):
+    import sys
+    def request():
+        return NS(ik_request=NS(robot_state=NS(joint_state=NS()),
+            pose_stamped=NS(header=NS(),pose=NS(position=NS(),orientation=NS()))))
+    monkeypatch.setitem(sys.modules,'moveit_msgs.srv',NS(GetPositionIK=NS(Request=request)))
+    monkeypatch.setitem(sys.modules,'builtin_interfaces.msg',NS(Duration=NS))
+    motion=PoseMotion.__new__(PoseMotion);motion.arm=NS(ee_frame='ee',parent_frame='base');motion.ik='ik'
+    motion._constraints=lambda *args: NS()
+    motion._service=lambda *args: NS(error_code=NS(val=error),solution=NS(joint_state=NS(name=[],position=[])))
+    with pytest.raises(MotionRejected) as exc:
+        motion.inverse_solutions([.3,0,.2],[0,90,0],joints(),limits(),MotionPolicy())
+    assert exc.value.code==expected and exc.value.data['ik_error_codes']==[error]*3

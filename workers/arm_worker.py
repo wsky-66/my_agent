@@ -77,14 +77,29 @@ class ArmBackend:
         return ToolResult.success("已读取末端位姿", {"position": [p.x, p.y, p.z], "rpy": rpy,
                                                      "frame": self.arm().parent_frame})
 
-    def ik_move(self, xyz, rpy):
+    def ik_move(self, xyz, rpy, cartesian=False):
         """Choose a nearby bounded IK branch, then plan and validate a full path."""
         if not hasattr(self, "_pose_motion"):
             from workers.pose_motion import PoseMotion
             self._pose_motion = PoseMotion(self)
-        return self._pose_motion.move(xyz, rpy)
+        return (self._pose_motion.move_cartesian(xyz,rpy) if cartesian else self._pose_motion.move(xyz, rpy))
 
     def __call__(self, action, args):
+        if action == "inspect_grasps":
+            candidates = args.get("candidates")
+            if not isinstance(candidates, list) or not 1<=len(candidates)<=12:
+                raise ValueError("预检候选需为 1~12 个")
+            for candidate in candidates:
+                for key in ("pre_position", "position", "rpy"):
+                    v = candidate.get(key)
+                    if not isinstance(v,list) or len(v)!=3 or not all(isinstance(x,(int,float)) and math.isfinite(x) for x in v):
+                        raise ValueError("预检位姿需为三个有限数字")
+                if not .015<=candidate.get("opening",0)<=.037:
+                    raise ValueError("预检夹爪位置无效")
+            if not hasattr(self, "_pose_motion"):
+                from workers.pose_motion import PoseMotion
+                self._pose_motion = PoseMotion(self)
+            return self._pose_motion.inspect_grasps(candidates)
         if action == "get_arm_pose":
             return self.pose()
         if action == "get_joints":
@@ -103,11 +118,13 @@ class ArmBackend:
                 rpy = [float(v) for v in rpy]
                 if not all(math.isfinite(v) for v in rpy):
                     raise ValueError("朝向必须为有限数字")
-                motion = self.ik_move(xyz, rpy)
+                motion = self.ik_move(xyz, rpy, cartesian=True) if args.get("cartesian") else self.ik_move(xyz, rpy)
                 if not motion.ok:
                     return motion
                 ok, msg = True, ""
             else:
+                if args.get("cartesian"):
+                    raise ValueError("抓放的受检笛卡尔移动必须给出完整朝向")
                 ok, msg = self.arm()._move_group_move(*xyz)
             if not ok:
                 return ToolResult.failure("MOTION_FAILED", msg)

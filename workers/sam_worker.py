@@ -47,7 +47,7 @@ class SamBackend:
         results = {}
         for item in params["items"]:
             out = item["out"]
-            dilation = float(item.get("dilate_cm", 1.0))
+            dilation = float(item.get("dilate_cm", 0.0))
             if not math.isfinite(dilation) or dilation < 0:
                 raise ValueError("膨胀距离必须为非负有限数字")
             px = self.backend.dilate_px(dilation)

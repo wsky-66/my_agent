@@ -31,6 +31,7 @@ def test_scene_uses_one_segmentation_batch_and_only_grasps_sources(monkeypatch,t
     result=scene.scan(['apple','bowl'],['apple'])
     assert result.ok
     assert len(batches)==1 and len(batches[0][1])==2
+    assert all(item['dilate_cm']==0 for item in batches[0][1])
     assert [v['label'] for v in inferred]==['apple']
     assert result.data['scene_id']==scene.store.plan.scene_id
 

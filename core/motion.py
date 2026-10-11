@@ -56,6 +56,9 @@ def check_joints(values, limits, *, feedback=False):
 
 
 def nearest_solution(candidates, start, limits, policy):
+    if not candidates:
+        raise MotionRejected("IK_NO_SOLUTION", "逆解接口未返回有效解；需检查目标可达性、碰撞及求解器错误码",
+                             {"ik_solutions": 0})
     accepted = []
     for candidate in candidates:
         try:
@@ -69,7 +72,8 @@ def nearest_solution(candidates, start, limits, policy):
         score = sum((2. if n in ("forearm_roll", "wrist_rotate") else 1.)*v*v for n, v in delta.items())
         accepted.append((score, target))
     if not accepted:
-        raise MotionRejected("IK_BRANCH_REJECTED", "没有找到关节变化足够小的有效逆解，停止移动；请拆分位置或朝向变化")
+        raise MotionRejected("IK_BRANCH_REJECTED", "逆解均超出关节限位或本次转角预算，停止移动",
+                             {"ik_solutions": len(candidates)})
     return min(accepted, key=lambda item: item[0])[1]
 
 
@@ -143,3 +147,86 @@ def move_pose(backend, xyz, rpy, policy, audit=lambda event: None):
     except MotionRejected as exc:
         audit({"stage": "rejected", "error_code": exc.code, **data, **exc.data})
         return ToolResult.failure(exc.code, str(exc), {**data, **exc.data})
+
+
+def inspect_grasp_candidates(backend, candidates, policy, audit=lambda event: None):
+    """Select a planned pregrasp + complete descent without executing anything."""
+    attempts = []
+    retryable = {"IK_NO_SOLUTION", "IK_BRANCH_REJECTED", "MOTION_PLAN_FAILED",
+                 "CARTESIAN_PATH_INCOMPLETE", "MOTION_EXCESS_ROTATION", "MOTION_EXCESS_SPEED",
+                 "MOTION_PLAN_DURATION"}
+    try:
+        limits = backend.limits()
+        start = check_joints(backend.joints(), limits, feedback=True)
+        for index, candidate in enumerate(candidates):
+            try:
+                backend.preview_opening(candidate["opening"])
+                rpy = candidate["rpy"]
+                solutions = backend.inverse_solutions(candidate["pre_position"], rpy, start, limits, policy)
+                pre = nearest_solution(solutions, start, limits, policy)
+                transit = backend.plan(start, pre, limits, policy)
+                validate_trajectory(transit, start, pre, limits, policy)
+                descent = slow_trajectory(backend.cartesian_plan(candidate["position"], rpy, pre, limits, policy),
+                                          policy.velocity_scaling)
+                if not descent.points:
+                    raise MotionRejected("CARTESIAN_PATH_INCOMPLETE", "笛卡尔路径为空")
+                end = check_joints(dict(zip(descent.joint_names, descent.points[-1].positions)), limits)
+                validate_trajectory(descent, pre, end, limits, policy)
+                current = check_joints(backend.joints(), limits, feedback=True)
+                if max(abs(current[n]-start[n]) for n in ARM_JOINTS) > .03:
+                    raise MotionRejected("MOTION_ROBOT_MOVED", "候选预检期间关节状态变化，请重新预检")
+                data = {"selected_index": index, "attempts": attempts, "start": start,
+                        "rpy": rpy, "pre_joints": pre, "end_joints": end}
+                audit({"stage": "grasp_preflight_selected", **data})
+                return ToolResult.success("候选进近及下降路径预检通过，尚未执行动作", data)
+            except MotionRejected as exc:
+                attempts.append({"index": index, "error_code": exc.code, "message": str(exc), **exc.data})
+                if exc.code not in retryable:
+                    raise
+        return ToolResult.failure("NO_REACHABLE_GRASP", "已检查的抓取候选均未通过可达性或路径预检，未张开夹爪",
+                                  {"attempts": attempts})
+    except MotionRejected as exc:
+        return ToolResult.failure(exc.code, str(exc), {"attempts": attempts, **exc.data})
+    finally:
+        backend.preview_opening(None)
+
+
+def slow_trajectory(trajectory, scaling):
+    """Slow an already timed Cartesian plan, preserving its waypoints."""
+    for point in trajectory.points:
+        stamp = point.time_from_start
+        if stamp.sec<0 or not 0<=stamp.nanosec<1_000_000_000:
+            raise MotionRejected("MOTION_PLAN_INVALID", "笛卡尔轨迹时间无效")
+        ns = round((stamp.sec*1_000_000_000+stamp.nanosec)/scaling)
+        stamp.sec, stamp.nanosec = divmod(ns, 1_000_000_000)
+        point.velocities = [v*scaling for v in point.velocities]
+        point.accelerations = [v*scaling*scaling for v in point.accelerations]
+    return trajectory
+
+
+def move_cartesian(backend, xyz, rpy, policy, audit=lambda event: None):
+    """A full straight path uses the same joint/path guards as pose planning."""
+    data = {"position":list(xyz), "rpy":list(rpy), "cartesian":True}
+    try:
+        limits = backend.limits()
+        start = check_joints(backend.joints(), limits, feedback=True)
+        path = backend.cartesian_plan(xyz, rpy, start, limits, policy)
+        if not path.points:
+            raise MotionRejected("MOTION_PLAN_INVALID", "笛卡尔轨迹为空")
+        target = check_joints(dict(zip(path.joint_names,path.points[-1].positions)),limits)
+        path = slow_trajectory(path,policy.velocity_scaling)
+        data.update(start=start,target=target,**validate_trajectory(path,start,target,limits,policy))
+        current = check_joints(backend.joints(),limits,feedback=True)
+        if max(abs(current[n]-start[n]) for n in ARM_JOINTS)>.03:
+            raise MotionRejected("MOTION_ROBOT_MOVED", "笛卡尔规划期间关节变化，停止发送轨迹")
+        audit({"stage":"planned",**data})
+        backend.execute(path,data["duration"])
+        actual = check_joints(backend.verify(target),limits,feedback=True)
+        if max(abs(actual[n]-target[n]) for n in ARM_JOINTS)>.03:
+            raise MotionRejected("MOTION_NOT_CONFIRMED", "笛卡尔运动后关节未确认到位")
+        data['actual'] = actual
+        audit({"stage":"completed",**data})
+        return ToolResult.success("完整笛卡尔轨迹已执行并确认到位",data)
+    except MotionRejected as exc:
+        audit({"stage":"rejected","error_code":exc.code,**data,**exc.data})
+        return ToolResult.failure(exc.code,str(exc),{**data,**exc.data})

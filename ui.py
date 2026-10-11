@@ -236,7 +236,11 @@ class Spinner:
 
     def stop(self):
         self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=1)
-            sys.stdout.write("\r\033[2K")
-            sys.stdout.flush()
+        with _LOCK:
+            thread, self._thread = self._thread, None
+        if thread:
+            thread.join(timeout=1)
+            with _LOCK:
+                # Repeated stops must not erase text streamed after the spinner.
+                sys.stdout.write("\r\033[2K")
+                sys.stdout.flush()

@@ -2,8 +2,11 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace as NS
 
-from main import _split_image_arg
+from main import _split_image_arg, run_turn
+from agent import AgentEvent
+import ui
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,3 +35,45 @@ def test_demo_wraps_panels_in_a_narrow_terminal():
     assert result.returncode == 0, result.stderr
     from ui import _disp_width
     assert all(_disp_width(line) <= 48 for line in result.stdout.splitlines())
+
+
+def test_tty_reply_keeps_streamed_text_and_speaks_same_response(monkeypatch, capsys):
+    monkeypatch.setattr(sys.stdout, 'isatty', lambda: True)
+    spoken = []
+
+    def stream(*args):
+        yield AgentEvent('content', text='你好，')
+        yield AgentEvent('content', text='小王。')
+        yield AgentEvent('response', text='你好，小王。')
+
+    run_turn(NS(stream=stream), '你好', voice=NS(speak_async=spoken.append))
+    output = capsys.readouterr().out
+    assert output.count('你好，小王。') == 1
+    assert '你好，小王。' in output.split('\r\033[2K')[-1]
+    assert spoken == ['你好，小王。']
+
+
+def test_tty_streamed_text_remains_visible_without_voice(monkeypatch, capsys):
+    monkeypatch.setattr(sys.stdout, 'isatty', lambda: True)
+
+    def stream(*args):
+        yield AgentEvent('content', text='文字')
+        yield AgentEvent('content', text='回复。')
+        yield AgentEvent('response', text='文字回复。')
+
+    run_turn(NS(stream=stream), '你好')
+    output = capsys.readouterr().out
+    assert output.count('文字回复。') == 1
+    assert '文字回复。' in output.split('\r\033[2K')[-1]
+
+
+def test_reply_without_content_chunks_displays_text_and_speaks(monkeypatch, capsys):
+    monkeypatch.setattr(sys.stdout, 'isatty', lambda: True)
+    spoken = []
+
+    def stream(*args):
+        yield AgentEvent('response', text='动作已完成。')
+
+    run_turn(NS(stream=stream), '查询任务', voice=NS(speak_async=spoken.append))
+    assert capsys.readouterr().out.count('动作已完成。') == 1
+    assert spoken == ['动作已完成。']

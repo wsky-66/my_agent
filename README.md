@@ -105,6 +105,8 @@ def add(a: float, b: float) -> ToolResult:
 
 全部选项见 `.env.example`。主程序不包含外部控制器源码或模型权重，依赖已有安装：
 
+网络请求沿用环境中的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 与对应小写变量，并遵循客户端的 `NO_PROXY` 规则。配置加载时会将旧写法 `socks://` 转换为 `socks5://`，保留代理地址、端口与认证信息；不会修改启动程序的 Shell 环境。SOCKS 依赖包含在 `requirements.txt` 中，已有环境升级后也应安装依赖。
+
 | 环境 / 配置 | 必需内容 |
 | --- | --- |
 | 主程序 Python | `requirements.txt`；硬件场景计算再安装 `requirements-hardware.txt` |

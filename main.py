@@ -141,7 +141,13 @@ def main():
     voice = None
     if config.ENABLE_VOICE:
         from capabilities import voice
-    agent = Agent()
+    try:
+        agent = Agent()
+    except (ValueError, ImportError) as exc:
+        ui.error("模型客户端初始化失败：" + str(exc))
+        if isinstance(exc, ImportError):
+            ui.notice("请在当前环境运行 python3 -m pip install -r requirements.txt 补齐依赖", False)
+        return 1
     ui.banner(config.MODEL, config.BASE_URL, len(registry.list_tools()))
 
     def on_term(signum, frame):

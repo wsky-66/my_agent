@@ -10,6 +10,20 @@ ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 
 
+def normalize_proxy_environment(environ=None):
+    """Accept the legacy SOCKS alias without removing or bypassing the proxy."""
+    environ = os.environ if environ is None else environ
+    for key in ("ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
+        value = environ.get(key, "").strip()
+        if value.lower().startswith("socks://"):
+            environ[key] = "socks5://" + value[len("socks://"):]
+
+
+# Normalize after dotenv loading, before any HTTP client or worker is created.
+# This affects only this process and its children; the caller's shell is unchanged.
+normalize_proxy_environment()
+
+
 def _path(key, default):
     return str(Path(os.path.expandvars(os.getenv(key, str(default)))).expanduser().resolve())
 

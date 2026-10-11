@@ -198,7 +198,8 @@ def move_cartesian(backend, xyz, rpy, policy, audit=lambda event: None):
             raise MotionRejected("MOTION_PLAN_INVALID", "笛卡尔轨迹为空")
         target = check_joints(dict(zip(path.joint_names,path.points[-1].positions)),limits)
         data.update(target=target,delta_rad={n:target[n]-start[n] for n in ARM_JOINTS})
-        path = slow_trajectory(path,policy.velocity_scaling)
+        # MoveIt already returns a timed Cartesian path. Only retime when its
+        # speed exceeds the driver target; do not multiply all times again.
         data.update(prepare_trajectory(path,start,target,limits,policy))
         current = check_joints(backend.joints(),limits,feedback=True)
         if max(abs(current[n]-start[n]) for n in ARM_JOINTS)>.03:

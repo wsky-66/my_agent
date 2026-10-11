@@ -211,12 +211,16 @@ try:
     simulator.scenario="straight"
     straight=motion.move_cartesian([.3,0.,.1],None)
     assert straight.ok and straight.data["cartesian"] and simulator.goals==4, straight.to_json()
+    assert straight.data['duration']==straight.data['original_duration']==1.
+    assert straight.data['time_scale']==1., 'valid MoveIt timing must not be slowed again'
     simulator.scenario="travel";simulator.positions=[0.,0.,0.,.109,0.,0.]
     time.sleep(.1)
     travelled=motion.move_cartesian([.348668,-.017547,.003533],None)
     assert travelled.ok and simulator.goals==5, travelled.to_json()
     assert abs(travelled.data['travel_rad']['forearm_roll']-5.622836129247646)<1e-9
     assert abs(travelled.data['delta_rad']['forearm_roll']-.4240422339166976)<1e-9
+    assert travelled.data['original_duration']==2.2 and travelled.data['time_scale']>1.
+    assert travelled.data['duration']<8., 'slow only to the driver target, without a separate 4x stretch'
     from workers.grasp_visualization import GraspVisualizer
     from visualization_msgs.msg import MarkerArray
     from sensor_msgs.msg import PointCloud2
@@ -248,7 +252,7 @@ try:
     assert received["/move_group/display_planned_path"].trajectory[0].joint_trajectory.points
     executor.remove_node(late);late.destroy_node()
     executor.remove_node(visual.node);visual.close();selected.close()
-    print("ROS 模拟验证通过：邻近逆解与物理限位；直线运动保持实际朝向；5.62 rad 累计变化不再触发自设阈值；自动减速；无额外到位等待；RViz 数据支持后加入订阅者。")
+    print("ROS 模拟验证通过：邻近逆解与物理限位；直线运动保持实际朝向和有效计时；5.62 rad 累计变化不被拦截；过快路径仅按驱动目标减速一次；无额外到位等待；RViz 数据支持后加入订阅者。")
 
 finally:
     motion.close()

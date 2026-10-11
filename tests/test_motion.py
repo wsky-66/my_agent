@@ -341,12 +341,32 @@ def test_remaining_execution_budget_is_checked_before_sending(monkeypatch):
     assert exc.value.code == "MOTION_PLAN_DURATION"
 
 
-def test_cartesian_path_is_slowed_checked_and_executed():
+def test_cartesian_path_keeps_valid_moveit_timing():
     backend=Backend()
     backend.cartesian_plan=lambda *args: trajectory(backend.start,backend.target,times=[0,1])
     result=move_cartesian(backend,[.3,0,.2],[0,90,0],MotionPolicy())
-    assert result.ok and result.data['duration']==4
+    assert result.ok and result.data['duration']==result.data['original_duration']==1
+    assert result.data['time_scale']==1
     assert backend.events==['joints','joints','execute']
+
+
+def test_cartesian_overspeed_is_retimed_once_against_the_driver_target():
+    backend=Backend()
+    path=trajectory(backend.start,joints(.1),backend.target,times=[0,.1,.2])
+    path.points[1].velocities=[1.]*6
+    path.points[1].accelerations=[2.]*6
+    backend.cartesian_plan=lambda *args: path
+    sent=[]
+    backend.execute=lambda p,duration:sent.append((p,duration))
+    result=move_cartesian(backend,[.3,0,.2],None,MotionPolicy())
+    factor=1./(3.14*.25)*(1.+1e-6)
+    assert result.ok and result.data['original_duration']==.2
+    assert result.data['time_scale']==pytest.approx(factor)
+    assert result.data['duration']==pytest.approx(.2*factor,abs=1e-9)
+    assert len(sent)==1 and sent[0][1]==result.data['duration']
+    assert [p.positions for p in path.points]==[[0.]*6,[.1]*6,[.2]*6]
+    assert path.points[1].velocities==pytest.approx([1./factor]*6)
+    assert path.points[1].accelerations==pytest.approx([2./factor**2]*6)
 
 
 def test_cartesian_travel_is_reported_without_the_old_net_displacement_cutoff():

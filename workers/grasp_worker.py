@@ -11,6 +11,7 @@ class GraspBackend:
         self.opts = opts
         self.model = None
         self.pipeline = None
+        self.visualizer = None
 
     def __call__(self, action, params):
         import cv2
@@ -29,7 +30,7 @@ class GraspBackend:
         k = snapshot["intrinsics"]
         transform = np.asarray(snapshot["extrinsics"], dtype=float)
         from core.grasp_geometry import rigid_transform
-        from workers.grasp_pipeline import GraspRejected, TabletopPipeline
+        from workers.grasp_pipeline import GraspPipeline
         transform = rigid_transform(transform)
         if len(k)!=9 or not np.isfinite(k).all() or k[0]<=0 or k[4]<=0:
             raise ValueError("相机内参无效")
@@ -39,7 +40,7 @@ class GraspBackend:
         if self.model is None:
             self.model = backend.load_model()
         if self.pipeline is None:
-            self.pipeline = TabletopPipeline(backend, self.model, self.opts)
+            self.pipeline = GraspPipeline(backend, self.model)
         masks = []
         for item in params["items"]:
             label, mask_path = item["label"], item.get("mask_path")
@@ -49,13 +50,10 @@ class GraspBackend:
             if mask is not None:
                 mask = mask > 0
             masks.append(mask)
-        try:
-            self.pipeline.prepare(color, depth, k, transform, masks)
-        except GraspRejected as exc:
-            return ToolResult.failure(exc.code, str(exc))
+        self.pipeline.prepare(color, depth, k, transform)
         result = {"_diagnostics": {}}
         for item, mask in zip(params["items"], masks):
-            grasps, diagnostics = self.pipeline.infer(mask, item.get("box"),
+            grasps, diagnostics = self.pipeline.infer(mask,
                 top=max(1, min(int(params.get("top", 3)), 50)), score_min=score_min,
                 no_collision=bool(params.get("no_collision", False)))
             for g in grasps:
@@ -63,8 +61,23 @@ class GraspBackend:
                          snapshot_timestamp=snapshot["timestamp"], ee_frame=f"{self.opts['robot_name']}/ee_gripper_link")
             result[item["label"]] = grasps
             result["_diagnostics"][item["label"]] = diagnostics
-        return ToolResult.success("抓取推理完成", result)
+        try:
+            from workers.grasp_visualization import GraspVisualizer
+            if self.visualizer is None:
+                self.visualizer = GraspVisualizer()
+            candidates = [dict(g, label=item["label"]) for item in params["items"] for g in result[item["label"]]]
+            self.visualizer.publish_scene(self.pipeline.points, self.pipeline.colors, candidates, snapshot["base_frame"])
+        except Exception as exc:
+            from logger import error
+            error("RViz 抓取结果发布失败", exc)
+            result["_visualization_error"] = str(exc)
+        return ToolResult.success("抓取推理完成" + ("，RViz 发布失败" if "_visualization_error" in result else "，点云和抓取 pose 已发布到 RViz"), result)
+
+    def close(self):
+        if self.visualizer is not None:
+            self.visualizer.close()
 
 
 if __name__ == "__main__":
-    serve(GraspBackend(options()))
+    backend = GraspBackend(options())
+    serve(backend, backend.close)

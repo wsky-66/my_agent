@@ -56,16 +56,9 @@ class Simulator(Node):
 
     def ik(self, request, response):
         ir = request.ik_request
-        assert ir.avoid_collisions and ir.robot_state.is_diff and len(ir.constraints.joint_constraints) == 6
+        assert ir.avoid_collisions and ir.robot_state.is_diff and not ir.constraints.joint_constraints
         assert ir.pose_stamped.header.frame_id == PREFIX[1:]+"/base_link"
         assert ir.timeout.nanosec == 350_000_000
-        if self.scenario == "preflight":
-            assert ir.robot_state.joint_state.name[-2:] == ["left_finger", "right_finger"]
-            assert list(ir.robot_state.joint_state.position[-2:]) == [.035, -.035]
-            if ir.pose_stamped.pose.position.x > .4:
-                self.iks += 1
-                response.error_code.val = -31
-                return response
         values = [0.]*6
         values[-1] = math.radians(-170) if self.scenario == "wrap" else (1.8, .2, .8)[self.iks%3]
         self.iks += 1
@@ -74,10 +67,8 @@ class Simulator(Node):
         return response
 
     def cartesian(self, request, response):
-        assert self.scenario == "preflight"
+        assert self.scenario == "straight"
         assert request.avoid_collisions and request.start_state.is_diff
-        assert request.start_state.joint_state.name[-2:] == ["left_finger", "right_finger"]
-        assert list(request.start_state.joint_state.position[-2:]) == [.035, -.035]
         start=dict(zip(request.start_state.joint_state.name,request.start_state.joint_state.position))
         values=[start[n] for n in ARM_JOINTS]
         end=list(values);end[-1]+=.05
@@ -102,7 +93,7 @@ class Simulator(Node):
         planned.error_code.val = -1 if self.scenario == "fail" else 1
         planned.trajectory.joint_trajectory.joint_names = list(ARM_JOINTS)
         values = [self.positions, target]
-        times = [0, .2] if self.scenario in ("speed", "preflight") else [0, 2]
+        times = [0, .2] if self.scenario == "speed" else [0, 2]
         if self.scenario == "loop":
             detour = list(self.positions)
             detour[-1] = 1.1
@@ -205,14 +196,42 @@ try:
     simulator.pending = None
     simulator.positions = [0.]*6
     time.sleep(.1)
-    simulator.scenario="preflight"
-    inspected=motion.inspect_grasps([dict(pre_position=[x,0.,.15],position=[x,0.,.05],
-                                        rpy=[0.,90.,0.],opening=.035) for x in (.5,.3)])
-    assert inspected.ok and inspected.data["selected_index"] == 1, inspected.to_json()
-    assert inspected.data["attempts"][0]["error_code"] == "IK_NO_SOLUTION"
-    assert inspected.data["transit"]["time_scale"] > 1
-    assert simulator.goals == 3 and motion._preview_opening is None
-    print("ROS 模拟验证通过：超速路径减速执行；控制器完成后不额外等待关节到位；未设置关节到位容差；预检没有发送执行动作。")
+    simulator.scenario="straight"
+    straight=motion.move_cartesian([.3,0.,.1],[0.,50.,0.])
+    assert straight.ok and straight.data["cartesian"] and simulator.goals==4, straight.to_json()
+    from workers.grasp_visualization import GraspVisualizer
+    from visualization_msgs.msg import MarkerArray
+    from sensor_msgs.msg import PointCloud2
+    from moveit_msgs.msg import DisplayTrajectory
+    from rclpy.qos import QoSProfile,DurabilityPolicy
+    import numpy as np
+    visual=GraspVisualizer();selected=GraspVisualizer(client)
+    executor.add_node(visual.node)
+    visual.publish_scene(np.array([[.3,0,.05]]*4),np.array([[1.,0.,0.]]*4),
+        [dict(label="pepper",position=[.3,0,.05],rpy=[0,50,0],width=.04,depth=.02,score=.3)],"base")
+    selected.publish_selection(dict(label="pepper",mode="fallback",position=[.3,0,.03],rpy=[0,50,0]),"base")
+    late=Node("rviz_late_subscriber");executor.add_node(late);received={}
+    qos=QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL)
+    for topic,kind in [("/graspnet/pointcloud",PointCloud2),("/graspnet/grasps",MarkerArray),
+                       ("/graspnet/selected_grasp",MarkerArray),("/move_group/display_planned_path",DisplayTrajectory)]:
+        late.create_subscription(kind,topic,lambda msg,topic=topic:received.update({topic:msg}),qos)
+    until=time.monotonic()+4
+    while len(received)<4 and time.monotonic()<until:time.sleep(.02)
+    assert len(received)==4, list(received)
+    pc=received["/graspnet/pointcloud"]
+    assert pc.header.frame_id=="base" and pc.width==1 and len(pc.data)==16
+    assert np.frombuffer(pc.data,dtype='<u4')[3]==0xff0000
+    markers=received["/graspnet/grasps"].markers
+    assert markers[0].action==markers[0].DELETEALL
+    assert len(next(m for m in markers if m.ns=='gripper').points)==96
+    arrow=next(m for m in markers if m.ns=='approach')
+    assert arrow.points[1].x>arrow.points[0].x and arrow.points[1].z<arrow.points[0].z
+    assert next(m for m in received["/graspnet/selected_grasp"].markers if m.ns=='label').text.endswith('fallback')
+    assert received["/move_group/display_planned_path"].trajectory[0].joint_trajectory.points
+    executor.remove_node(late);late.destroy_node()
+    executor.remove_node(visual.node);visual.close();selected.close()
+    print("ROS 模拟验证通过：位姿与直线运动；防绕圈和自动减速；无额外到位等待；RViz 点云、候选、兜底姿态及轨迹支持后加入订阅者。")
+
 finally:
     motion.close()
     executor.shutdown(timeout_sec=2)

@@ -8,8 +8,7 @@ from services.perception import calibrate
 from services.runtime import worker
 
 client = worker("grasp", config.VISION_PYTHON, {"controller_dir": config.CONTROLLER_DIR,
-                "robot_name": config.ROBOT_NAME, "gripper_mesh_dir": config.GRIPPER_MESH_DIR,
-                "context_px": config.GRASP_CONTEXT_PX, "collision_budget": config.GRASP_COLLISION_BUDGET}, ros=True, timeout=300,
+                "robot_name": config.ROBOT_NAME}, ros=True, timeout=300,
                 env={"OPENBLAS_NUM_THREADS":"1","OMP_NUM_THREADS":"1"})
 
 

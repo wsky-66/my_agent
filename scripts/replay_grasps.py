@@ -31,8 +31,8 @@ def main():
                 label=item['label'];d=result.data['_diagnostics'][label]
                 for candidate in result.data[label]:
                     candidate['execution_ready']=False
-                print(f"{label}: {len(result.data[label])} candidates; scene rejects={d['collision_rejections']}; "
-                      f"closing rejects={d['closing_collision_rejections']}; budget_exhausted={d['budget_exhausted']}",flush=True)
+                print(f"{label}: {len(result.data[label])} candidates; {d.get('pipeline','original')}; "
+                      f"{d.get('reason','')}",flush=True)
         else:
             print(f'{result.error_code}: {result.message}',file=sys.stderr)
         args.output.parent.mkdir(parents=True,exist_ok=True)

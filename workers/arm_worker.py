@@ -85,27 +85,21 @@ class ArmBackend:
         return (self._pose_motion.move_cartesian(xyz,rpy) if cartesian else self._pose_motion.move(xyz, rpy))
 
     def __call__(self, action, args):
-        if action == "inspect_grasps":
-            candidates = args.get("candidates")
-            if not isinstance(candidates, list) or not 1<=len(candidates)<=12:
-                raise ValueError("预检候选需为 1~12 个")
-            for candidate in candidates:
-                for key in ("pre_position", "position", "rpy"):
-                    v = candidate.get(key)
-                    if not isinstance(v,list) or len(v)!=3 or not all(isinstance(x,(int,float)) and math.isfinite(x) for x in v):
-                        raise ValueError("预检位姿需为三个有限数字")
-                if not .015<=candidate.get("opening",0)<=.037:
-                    raise ValueError("预检夹爪位置无效")
-            if not hasattr(self, "_pose_motion"):
-                from workers.pose_motion import PoseMotion
-                self._pose_motion = PoseMotion(self)
-            return self._pose_motion.inspect_grasps(candidates)
         if action == "get_arm_pose":
             return self.pose()
         if action == "get_joints":
             data = self.joint().get_joints()
             return ToolResult.success("已读取关节角度（弧度）", data) if data else ToolResult.failure("JOINT_STATE_UNAVAILABLE", "未收到关节状态")
         if action == "move_arm":
+            if args.get("grasp_debug"):
+                try:
+                    from workers.grasp_visualization import GraspVisualizer
+                    if not hasattr(self, "_grasp_visualizer"):
+                        self._grasp_visualizer = GraspVisualizer(self.arm().node)
+                    self._grasp_visualizer.publish_selection(args["grasp_debug"], self.arm().parent_frame)
+                except Exception as exc:
+                    from logger import error
+                    error("RViz 所选抓取姿态发布失败", exc)
             xyz = [float(args[k]) for k in ("x", "y", "z")]
             rpy = [args.get(k) for k in ("roll", "pitch", "yaw")]
             if not all(math.isfinite(x) for x in xyz):
@@ -155,6 +149,8 @@ class ArmBackend:
         # Release each node without an individual client shutting down other clients' context.
         if hasattr(self, "_pose_motion"):
             self._pose_motion.close()
+        if hasattr(self, "_grasp_visualizer"):
+            self._grasp_visualizer.close()
         for client in self.clients.values():
             client._running = False
             client._spin.join(timeout=1)

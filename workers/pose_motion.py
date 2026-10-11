@@ -3,8 +3,7 @@ import time
 import math
 
 from core.health import ARM_JOINTS
-from core.motion import (MotionPolicy, MotionRejected, driver_limits, move_pose, move_cartesian,
-                         inspect_grasp_candidates)
+from core.motion import MotionPolicy, MotionRejected, driver_limits, move_pose, move_cartesian
 
 
 class PoseMotion:
@@ -22,7 +21,22 @@ class PoseMotion:
         self.planner = self.arm.node.create_client(GetMotionPlan, "/plan_kinematic_path")
         self.action = ActionClient(self.arm.node, FollowJointTrajectory,
             f"/{backend.opts['robot_name']}/arm_controller/follow_joint_trajectory")
+        from moveit_msgs.msg import DisplayTrajectory
+        from rclpy.qos import QoSProfile, DurabilityPolicy
+        self.display = self.arm.node.create_publisher(DisplayTrajectory, "/move_group/display_planned_path",
+            QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.goal = None
+
+    def _publish_plan(self, start, trajectory):
+        if getattr(self, "display", None) is not None:
+            try:
+                from moveit_msgs.msg import DisplayTrajectory
+                msg = DisplayTrajectory()
+                msg.trajectory_start, msg.trajectory = start, [trajectory]
+                self.display.publish(msg)
+            except Exception as exc:
+                from logger import error
+                error("RViz 规划轨迹发布失败", exc)
 
     def _wait(self, future, timeout):
         import rclpy
@@ -38,7 +52,7 @@ class PoseMotion:
 
     def _service(self, client, request, timeout):
         if time.monotonic() >= self.deadline:
-            raise MotionRejected("MOTION_TIMEOUT", "候选预检或运动请求超过总时间预算")
+            raise MotionRejected("MOTION_TIMEOUT", "运动请求超过总时间预算")
         available = min(2., max(0., self.deadline-time.monotonic()))
         if not client.wait_for_service(timeout_sec=available):
             raise MotionRejected("MOTION_SERVICE_MISSING", "位姿运动所需的驱动、逆解或路径规划接口不可用")
@@ -94,12 +108,20 @@ class PoseMotion:
             seeds.append(seed)
         solutions = []
         errors = []
-        for seed in seeds:
+        # Search near the real state first; if none succeeds, allow neutral
+        # starting guesses too. These are solver guesses, never robot commands.
+        neutral = {n:max(limits[n][0],min(limits[n][1],0.)) for n in ARM_JOINTS}
+        reach = dict(neutral)
+        reach.update(waist=math.atan2(xyz[1],xyz[0]), shoulder=.2, elbow=.05,
+                     wrist_angle=1.4, wrist_rotate=math.radians(rpy[0]))
+        reach = {n:max(limits[n][0],min(limits[n][1],v)) for n,v in reach.items()}
+        for index, seed in enumerate(seeds+[neutral,reach]):
+            if index>=len(seeds) and solutions:
+                break
             request = GetPositionIK.Request()
             ir = request.ik_request
             ir.group_name, ir.ik_link_name = "interbotix_arm", self.arm.ee_frame
             self._start_state(ir.robot_state, seed)
-            ir.constraints = self._constraints(start, limits, policy.max_joint_change)
             ir.avoid_collisions = True
             ir.timeout = Duration(nanosec=350_000_000)
             ir.pose_stamped.header.frame_id = self.arm.parent_frame
@@ -115,37 +137,19 @@ class PoseMotion:
                     solutions.append(dict(zip(state.name, state.position)))
         if not solutions:
             if 1 in errors:
-                raise MotionRejected("IK_RESPONSE_INVALID", "逆解接口报告成功但未返回完整关节解，停止预检",
+                raise MotionRejected("IK_RESPONSE_INVALID", "逆解接口报告成功但未返回完整关节解，停止移动",
                                      {"ik_error_codes": errors, "ik_solutions": 0})
             if any(code in (-15,-16,-17,-18,-21,-22,-23,-24,-25,-26) for code in errors):
-                raise MotionRejected("IK_REQUEST_INVALID", "逆解接口报告请求、坐标系或机器人状态错误，停止预检",
+                raise MotionRejected("IK_REQUEST_INVALID", "逆解接口报告请求、坐标系或机器人状态错误，停止移动",
                                      {"ik_error_codes": errors, "ik_solutions": 0})
             raise MotionRejected("IK_NO_SOLUTION", "逆解求解器未返回有效解，尚不能归因于关节转角限制",
                                  {"ik_error_codes": errors, "ik_solutions": 0})
         return solutions
 
-    def preview_opening(self, value):
-        # Hypothetical finger state is sent only to planning services.
-        # It never calls the gripper controller.
-        self._preview_opening = value
-
     def _start_state(self, state, joints):
         state.is_diff = True
-        names = list(ARM_JOINTS)
-        positions = [float(joints[n]) for n in ARM_JOINTS]
-        opening = getattr(self, "_preview_opening", None)
-        if opening is not None:
-            names.extend(["left_finger", "right_finger"])
-            positions.extend([float(opening), -float(opening)])
-        # ROS converts sequence<float64> to array('d') on assignment. Build
-        # the complete list first; array += list raises TypeError.
-        state.joint_state.name = names
-        state.joint_state.position = positions
-
-    def inspect_grasps(self, candidates):
-        from logger import record_motion
-        self.deadline = time.monotonic()+self.policy.timeout
-        return inspect_grasp_candidates(self, candidates, self.policy, audit=record_motion)
+        state.joint_state.name = list(ARM_JOINTS)
+        state.joint_state.position = [float(joints[n]) for n in ARM_JOINTS]
 
     def plan(self, start, target, limits, policy):
         from moveit_msgs.srv import GetMotionPlan
@@ -165,6 +169,7 @@ class PoseMotion:
         if response.error_code.val != 1:
             raise MotionRejected("MOTION_PLAN_FAILED", "完整路径规划失败，停止移动；请拆分位置或朝向变化",
                                  {"planning_error_code": int(response.error_code.val)})
+        self._publish_plan(request.motion_plan_request.start_state, response.trajectory)
         return response.trajectory.joint_trajectory
 
     def cartesian_plan(self, xyz, rpy, start, limits, policy):
@@ -188,6 +193,7 @@ class PoseMotion:
             raise MotionRejected("CARTESIAN_PATH_INCOMPLETE","进近/撤离的笛卡尔路径不完整，停止执行",
                                  {"cartesian_error_code": int(response.error_code.val),
                                   "fraction": float(response.fraction) if math.isfinite(response.fraction) else None})
+        self._publish_plan(request.start_state,response.solution)
         return response.solution.joint_trajectory
 
     @staticmethod
@@ -246,3 +252,4 @@ class PoseMotion:
             self.goal.cancel_goal_async()
             self.goal = None
         self.action.destroy()
+        self.arm.node.destroy_publisher(self.display)

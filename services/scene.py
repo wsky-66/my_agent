@@ -103,12 +103,14 @@ def scan(labels, grasp_labels=None):
         picks = [{"label": lb, "mask_path": r["mask_path"], "box": r["bbox"]} for lb, r in records.items()
                  if lb in pick_labels and r["ok"]]
         with measure("vision.grasp"):
-            inferred = grasp.infer(picks, snapshot, top=8, score_min=config.GRASP_SCORE_MIN)
+            inferred = grasp.infer(picks, snapshot, top=3, score_min=config.GRASP_SCORE_MIN)
         for item in picks:
             rec = records[item["label"]]
             if inferred.ok:
                 rec["grasps"] = inferred.data.get(item["label"], [])
                 rec["grasp_diagnostics"] = inferred.data.get("_diagnostics", {}).get(item["label"], {})
+                if inferred.data.get("_visualization_error"):
+                    rec["grasp_visualization_error"] = inferred.data["_visualization_error"]
             else:
                 rec["grasp_error"] = inferred.message
     if is_cancelled():

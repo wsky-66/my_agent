@@ -184,59 +184,6 @@ def move_pose(backend, xyz, rpy, policy, audit=lambda event: None):
         return ToolResult.failure(exc.code, str(exc), {**data, **exc.data})
 
 
-def inspect_grasp_candidates(backend, candidates, policy, audit=lambda event: None):
-    """Select a planned pregrasp + complete descent without executing anything."""
-    attempts = []
-    retryable = {"IK_NO_SOLUTION", "IK_BRANCH_REJECTED", "MOTION_PLAN_FAILED",
-                 "CARTESIAN_PATH_INCOMPLETE", "MOTION_EXCESS_ROTATION", "MOTION_EXCESS_SPEED",
-                 "MOTION_PLAN_DURATION"}
-    try:
-        limits = backend.limits()
-        start = check_joints(backend.joints(), limits, feedback=True)
-        audit({"stage": "grasp_preflight_start", "start": start, "limits": limits,
-               "candidate_count": len(candidates)})
-        for index, candidate in enumerate(candidates):
-            phase = "ik"
-            try:
-                backend.preview_opening(candidate["opening"])
-                rpy = candidate["rpy"]
-                solutions = backend.inverse_solutions(candidate["pre_position"], rpy, start, limits, policy)
-                pre = nearest_solution(solutions, start, limits, policy)
-                phase = "transit"
-                transit = backend.plan(start, pre, limits, policy)
-                transit_metrics = prepare_trajectory(transit, start, pre, limits, policy)
-                phase = "descent"
-                descent = slow_trajectory(backend.cartesian_plan(candidate["position"], rpy, pre, limits, policy),
-                                          policy.velocity_scaling)
-                if not descent.points:
-                    raise MotionRejected("CARTESIAN_PATH_INCOMPLETE", "笛卡尔路径为空")
-                end = check_joints(dict(zip(descent.joint_names, descent.points[-1].positions)), limits)
-                descent_metrics = prepare_trajectory(descent, pre, end, limits, policy)
-                current = check_joints(backend.joints(), limits, feedback=True)
-                if max(abs(current[n]-start[n]) for n in ARM_JOINTS) > .03:
-                    raise MotionRejected("MOTION_ROBOT_MOVED", "候选预检期间关节状态变化，请重新预检")
-                data = {"selected_index": index, "attempts": attempts, "start": start,
-                        "rpy": rpy, "pre_joints": pre, "end_joints": end,
-                        "transit": transit_metrics, "descent": descent_metrics}
-                audit({"stage": "grasp_preflight_selected", **data})
-                return ToolResult.success("候选进近及下降路径预检通过，尚未执行动作", data)
-            except MotionRejected as exc:
-                attempt = {"index": index, "phase": phase, "error_code": exc.code,
-                           "message": str(exc), **exc.data}
-                attempts.append(attempt)
-                audit({"stage": "grasp_preflight_candidate_rejected", "candidate": candidate, **attempt})
-                if exc.code not in retryable:
-                    raise
-        audit({"stage": "grasp_preflight_rejected", "error_code": "NO_REACHABLE_GRASP", "attempts": attempts})
-        return ToolResult.failure("NO_REACHABLE_GRASP", "已检查的抓取候选均未通过可达性或路径预检，未张开夹爪",
-                                  {"attempts": attempts})
-    except MotionRejected as exc:
-        audit({"stage": "grasp_preflight_rejected", "error_code": exc.code, "attempts": attempts, **exc.data})
-        return ToolResult.failure(exc.code, str(exc), {"attempts": attempts, **exc.data})
-    finally:
-        backend.preview_opening(None)
-
-
 def slow_trajectory(trajectory, scaling):
     """Uniformly slow a timed plan; positions and interpolation stay unchanged."""
     if not math.isfinite(scaling) or not 0 < scaling <= 1:

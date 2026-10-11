@@ -130,17 +130,17 @@ def execute(actions, scene_id=None, return_to_sleep=True, allow_fallback=True):
         sequence = [
             ("gripper_set", {"position": 0.037}),
             ("move_arm", dict(x=x, y=y, z=z+0.10, **orientation, grasp_debug=debug)),
-            ("move_arm", dict(x=x, y=y, z=grasp_z, cartesian=True, **orientation)),
+            ("move_arm", dict(x=x, y=y, z=grasp_z, cartesian=True)),
             ("gripper_set", {"position": 0.024}),
-            ("move_arm", dict(x=x, y=y, z=z+0.15, cartesian=True, **orientation)),
+            ("move_arm", dict(x=x, y=y, z=z+0.15, cartesian=True)),
         ]
         if target is not None:
             tx, ty, tz = target
             sequence += [
-                ("move_arm", dict(x=tx, y=ty, z=tz+0.20, cartesian=True, **orientation)),
-                ("move_arm", dict(x=tx, y=ty, z=tz+0.04, cartesian=True, **orientation)),
+                ("move_arm", dict(x=tx, y=ty, z=tz+0.20, cartesian=True)),
+                ("move_arm", dict(x=tx, y=ty, z=tz+0.04, cartesian=True)),
                 ("gripper_set", {"position": 0.037}),
-                ("move_arm", dict(x=tx, y=ty, z=tz+0.20, cartesian=True, **orientation)),
+                ("move_arm", dict(x=tx, y=ty, z=tz+0.20, cartesian=True)),
             ]
         for index, (name, args) in enumerate(sequence):
             try:

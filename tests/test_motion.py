@@ -67,18 +67,18 @@ def test_pose_is_planned_before_controller_completion_is_reported():
     assert [e["stage"] for e in events] == ["start", "ik_selected", "planned", "completed"]
 
 
-def test_wrapped_wrist_solution_is_rejected_without_blind_shortcut():
+def test_wrist_solution_is_ranked_by_absolute_distance_without_a_rotation_cutoff():
     start, target = joints(), joints()
     start["wrist_rotate"], target["wrist_rotate"] = map(math.radians, (170, -170))
-    with pytest.raises(MotionRejected) as exc:
-        nearest_solution([target], start, limits(), MotionPolicy())
-    assert exc.value.code == "IK_BRANCH_REJECTED"
+    near = dict(target, wrist_rotate=math.radians(160))
+    assert nearest_solution([target, near], start, limits()) == near
+    assert nearest_solution([target], start, limits()) == target
 
 
 def test_seeded_candidates_choose_nearby_wrist_branch():
     far, near = joints(.1), joints(.2)
     far["wrist_rotate"] = 2.
-    assert nearest_solution([far, near], joints(), limits(), MotionPolicy()) == near
+    assert nearest_solution([far, near], joints(), limits()) == near
 
 
 @pytest.mark.parametrize("value", [2*math.pi, -2*math.pi, float("nan"), float("inf")])
@@ -90,7 +90,7 @@ def test_feedback_outside_model_is_never_normalized_and_sent(value):
     assert "ik" not in backend.events and "execute" not in backend.events
 
 
-@pytest.mark.parametrize("kind", ["start", "end", "loop", "duration", "nan", "time", "duplicate", "single"])
+@pytest.mark.parametrize("kind", ["start", "end", "limit", "duration", "nan", "time", "duplicate", "single"])
 def test_bad_planned_path_never_reaches_controller(kind):
     backend = Backend()
     start, target = backend.start, backend.target
@@ -98,8 +98,8 @@ def test_bad_planned_path_never_reaches_controller(kind):
         path = trajectory(joints(.1), target)
     elif kind == "end":
         path = trajectory(start, joints(.1))
-    elif kind == "loop":
-        path = trajectory(start, joints(1.), start, target, times=[0,2,4,5])
+    elif kind == "limit":
+        path = trajectory(start, joints(3.2), target, times=[0,5,10])
     elif kind == "duration":
         path = trajectory(start, target, times=[0,.1])
         path.points[1].velocities = [1000.]*6  # slowing would exceed the execution budget
@@ -149,12 +149,12 @@ def test_overspeed_plan_is_slowed_to_driver_limit_with_geometry_preserved():
         assert b.accelerations == pytest.approx([v/factor**2 for v in a.accelerations])
 
 
-def test_speed_repair_cannot_hide_joint_detours_or_endpoint_errors():
-    for path in (trajectory(joints(), joints(1.), joints(), joints(.2), times=[0,.1,.2,.3]),
+def test_speed_repair_cannot_hide_driver_bound_or_endpoint_errors():
+    for path in (trajectory(joints(), joints(3.2), joints(.2), times=[0,.1,.2]),
                  trajectory(joints(), joints(.1), times=[0,.01])):
         with pytest.raises(MotionRejected) as exc:
             prepare_trajectory(path, joints(), joints(.2), limits(), MotionPolicy())
-        assert exc.value.code in {"MOTION_EXCESS_ROTATION", "MOTION_END_MISMATCH"}
+        assert exc.value.code in {"MOTION_JOINT_INVALID", "MOTION_END_MISMATCH"}
 
 
 def test_pose_execution_uses_the_slowed_trajectory_and_duration():
@@ -219,8 +219,8 @@ def test_valid_driver_limits_are_used_instead_of_hardcoded_angles():
         check_joints(joints(1.1), actual)
 
 
-@pytest.mark.parametrize("options", [dict(max_joint_change=7), dict(max_joint_change=0),
-    dict(velocity_scaling=0), dict(velocity_scaling=2), dict(timeout=float("nan"))])
+@pytest.mark.parametrize("options", [dict(velocity_scaling=0), dict(velocity_scaling=2),
+    dict(timeout=float("nan"))])
 def test_invalid_motion_policy(options):
     with pytest.raises(ValueError):
         MotionPolicy(**options)
@@ -260,6 +260,22 @@ def test_position_only_move_uses_controller_result_without_pose_query(monkeypatc
         assert result.data["controller_completed"] is True
     else:
         assert result.error_code == "MOTION_FAILED"
+
+
+@pytest.mark.parametrize("ok", [True, False])
+def test_position_only_cartesian_move_uses_the_same_planner_without_rpy(monkeypatch, ok):
+    backend = ArmBackend({"controller_dir":"/tmp", "robot_name":"test"})
+    expected = ToolResult.success("done") if ok else ToolResult.failure("MOTION_PLAN_FAILED","failed")
+    calls = []
+    def move(xyz,rpy,cartesian=False):
+        calls.append((xyz,rpy,cartesian))
+        return expected
+    monkeypatch.setattr(backend,"ik_move",move)
+    monkeypatch.setattr(backend,"arm",lambda:pytest.fail("position-only Cartesian must use PoseMotion"))
+    result=backend("move_arm",dict(x=.3,y=0,z=.2,cartesian=True))
+    assert result.ok==ok and calls==[([.3,0.,.2],None,True)]
+    if not ok:
+        assert result is expected
 
 
 def test_late_accepted_goal_is_cancelled_after_send_timeout():
@@ -333,11 +349,29 @@ def test_cartesian_path_is_slowed_checked_and_executed():
     assert backend.events==['joints','joints','execute']
 
 
-def test_cartesian_joint_loop_is_rejected_before_controller_dispatch():
+def test_cartesian_travel_is_reported_without_the_old_net_displacement_cutoff():
     backend=Backend()
-    backend.cartesian_plan=lambda *args: trajectory(backend.start,joints(1.),backend.start,backend.target)
-    result=move_cartesian(backend,[.3,0,.2],[0,90,0],MotionPolicy())
-    assert result.error_code=='MOTION_EXCESS_ROTATION' and 'execute' not in backend.events
+    # Match the reported pepper failure: 5.62 rad travel, only .424 rad net,
+    # with every position in the driver's range. The old allowed .986 rad.
+    start, end, middle = joints(), joints(), joints()
+    start['forearm_roll'] = .109
+    end['forearm_roll'] = start['forearm_roll'] + (.9860633508750463-.35)/1.5
+    middle['forearm_roll'] = start['forearm_roll'] - (5.622836129247646-(end['forearm_roll']-start['forearm_roll']))/2
+    backend.start, backend.target = start, end
+    backend.cartesian_plan=lambda *args: trajectory(start,middle,end,times=[0,1.5,3])
+    result=move_cartesian(backend,[.348668,-.017547,.003533],None,MotionPolicy())
+    assert result.ok and backend.events.count('execute')==1
+    assert result.data['rpy'] is None
+    assert result.data['travel_rad']['forearm_roll']==pytest.approx(5.622836129247646)
+    assert result.data['delta_rad']['forearm_roll']==pytest.approx(.4240422339166976)
+
+
+def test_cartesian_driver_bound_failure_keeps_start_in_diagnostics():
+    backend=Backend()
+    backend.cartesian_plan=lambda *args: trajectory(backend.start,joints(3.2),backend.target)
+    result=move_cartesian(backend,[.3,0,.2],None,MotionPolicy())
+    assert result.error_code=='MOTION_JOINT_INVALID' and 'execute' not in backend.events
+    assert result.data['start']==backend.start and result.data['target']==backend.target
 
 
 def test_cartesian_plan_without_time_parameterisation_stops():
@@ -349,7 +383,7 @@ def test_cartesian_plan_without_time_parameterisation_stops():
 
 def test_empty_ik_does_not_claim_excessive_joint_rotation():
     with pytest.raises(MotionRejected) as exc:
-        nearest_solution([], joints(), limits(), MotionPolicy())
+        nearest_solution([], joints(), limits())
     assert exc.value.code == 'IK_NO_SOLUTION'
     assert exc.value.data['ik_solutions'] == 0
 
@@ -376,7 +410,6 @@ def test_ik_solver_error_codes_are_preserved(monkeypatch,error,expected):
     monkeypatch.setitem(sys.modules,'moveit_msgs.srv',NS(GetPositionIK=NS(Request=request)))
     monkeypatch.setitem(sys.modules,'builtin_interfaces.msg',NS(Duration=NS))
     motion=PoseMotion.__new__(PoseMotion);motion.arm=NS(ee_frame='ee',parent_frame='base');motion.ik='ik'
-    motion._constraints=lambda *args: NS()
     motion._service=lambda *args: NS(error_code=NS(val=error),solution=NS(joint_state=NS(name=[],position=[])))
     with pytest.raises(MotionRejected) as exc:
         motion.inverse_solutions([.3,0,.2],[0,90,0],joints(),limits(),MotionPolicy())
@@ -403,6 +436,23 @@ for message,state in [(GetPositionIK.Request(),lambda m:m.ik_request.robot_state
     assert state(decoded).joint_state.name==list(ARM_JOINTS)
     assert list(state(decoded).joint_state.position)==[.2]*6
 print('IK, motion-plan and Cartesian requests serialized successfully')
+from geometry_msgs.msg import Pose
+from scipy.spatial.transform import Rotation
+from types import SimpleNamespace as NS
+actual=Pose();q=Rotation.from_euler('xyz',[.2,50.3,-.1],degrees=True).as_quat()
+actual.orientation.x,actual.orientation.y,actual.orientation.z,actual.orientation.w=map(float,q)
+motion.arm=NS(ee_frame='ee',parent_frame='base',get_current_ee_pose=lambda:actual)
+motion.cartesian='cartesian'
+for desired in (None,[0.,50.,0.]):
+    def service(client,request,timeout):
+        decoded=deserialize_message(serialize_message(request),type(request))
+        pose=decoded.waypoints[0];expected=q if desired is None else Rotation.from_euler('xyz',desired,degrees=True).as_quat()
+        assert max(abs(a-b) for a,b in zip([pose.orientation.x,pose.orientation.y,pose.orientation.z,pose.orientation.w],expected))<1e-12
+        assert not decoded.path_constraints.joint_constraints
+        return NS(error_code=NS(val=1),fraction=1.,solution=NS(joint_trajectory='path'))
+    motion._service=service
+    assert motion.cartesian_plan([.3,0,.2],desired,{n:0. for n in ARM_JOINTS},None,None)=='path'
+print('Cartesian requests preserve actual orientation or explicit RPY')
 '''
     result=subprocess.run(['bash','-c','source /opt/ros/humble/setup.bash && exec /usr/bin/python3 -'],
                           input=script,text=True,capture_output=True,timeout=15,

@@ -60,24 +60,37 @@ class Simulator(Node):
         assert ir.pose_stamped.header.frame_id == PREFIX[1:]+"/base_link"
         assert ir.timeout.nanosec == 350_000_000
         values = [0.]*6
-        values[-1] = math.radians(-170) if self.scenario == "wrap" else (1.8, .2, .8)[self.iks%3]
+        values[-1] = 3.2 if self.scenario == "limit" else ((1.8, .2, .8)[self.iks%3])
         self.iks += 1
         response.error_code.val = 1
         response.solution.joint_state.name, response.solution.joint_state.position = list(ARM_JOINTS), values
         return response
 
     def cartesian(self, request, response):
-        assert self.scenario == "straight"
+        assert self.scenario in ("straight", "travel")
         assert request.avoid_collisions and request.start_state.is_diff
+        assert not request.path_constraints.joint_constraints
+        # A straight move without RPY keeps the measured orientation, including
+        # small differences from the original requested 50-degree pitch.
+        from scipy.spatial.transform import Rotation
+        q=Rotation.from_euler('xyz',[.2,50.3,-.1],degrees=True).as_quat()
+        p=request.waypoints[0].orientation
+        assert max(abs(a-b) for a,b in zip([p.x,p.y,p.z,p.w],q))<1e-12
         start=dict(zip(request.start_state.joint_state.name,request.start_state.joint_state.position))
         values=[start[n] for n in ARM_JOINTS]
         end=list(values);end[-1]+=.05
         response.error_code.val=1
         response.fraction=1.
         response.solution.joint_trajectory.joint_names=list(ARM_JOINTS)
-        for positions,seconds in [(values,0),(end,1)]:
+        path=[(values,0),(end,1)]
+        if self.scenario == "travel":
+            middle=list(values);middle[3]=-2.490396947665474
+            end[3]=.5330422339166976
+            path=[(values,0),(middle,1.1),(end,2.2)]
+        for positions,seconds in path:
             point=JointTrajectoryPoint()
-            point.positions,point.time_from_start.sec=positions,seconds
+            point.positions=positions
+            point.time_from_start.sec,point.time_from_start.nanosec=divmod(round(seconds*1e9),1_000_000_000)
             response.solution.joint_trajectory.points.append(point)
         return response
 
@@ -86,7 +99,7 @@ class Simulator(Node):
         motion = request.motion_plan_request
         assert motion.num_planning_attempts == 1 and motion.start_state.is_diff
         assert motion.max_velocity_scaling_factor == motion.max_acceleration_scaling_factor == .25
-        assert len(motion.path_constraints.joint_constraints) == 6
+        assert not motion.path_constraints.joint_constraints
         target = [j.position for j in motion.goal_constraints[0].joint_constraints]
         assert abs(target[-1]-.2) < 1e-6, target
         planned = response.motion_plan_response
@@ -94,10 +107,6 @@ class Simulator(Node):
         planned.trajectory.joint_trajectory.joint_names = list(ARM_JOINTS)
         values = [self.positions, target]
         times = [0, .2] if self.scenario == "speed" else [0, 2]
-        if self.scenario == "loop":
-            detour = list(self.positions)
-            detour[-1] = 1.1
-            values, times = [self.positions, detour, self.positions, target], [0,2,4,5]
         for positions, seconds in zip(values, times):
             point = JointTrajectoryPoint()
             point.positions = list(positions)
@@ -139,7 +148,15 @@ class Client(Node):
         self._feedback = time.monotonic(), message
 
     def arm(self):
-        return NS(node=self, ee_frame=PREFIX[1:]+"/ee_gripper_link", parent_frame=PREFIX[1:]+"/base_link")
+        return NS(node=self, ee_frame=PREFIX[1:]+"/ee_gripper_link", parent_frame=PREFIX[1:]+"/base_link",
+                  get_current_ee_pose=self.current_pose)
+
+    def current_pose(self):
+        from geometry_msgs.msg import Pose
+        from scipy.spatial.transform import Rotation
+        pose=Pose();q=Rotation.from_euler('xyz',[.2,50.3,-.1],degrees=True).as_quat()
+        pose.orientation.x,pose.orientation.y,pose.orientation.z,pose.orientation.w=map(float,q)
+        return pose
 
     def joint(self):
         return self
@@ -165,16 +182,11 @@ try:
     first = motion.move([.3,0.,.2], [0.,50.,0.])
     assert first.ok and abs(first.data["target"]["wrist_rotate"]-.2) < 1e-6, first.to_json()
     assert simulator.goals == simulator.plans == 1 and simulator.iks == 3
-    simulator.scenario, simulator.positions = "wrap", [0.]*5+[math.radians(170)]
+    simulator.scenario, simulator.positions = "limit", [0.]*6
     time.sleep(.1)
-    wrapped = motion.move([.3,0.,.2], [0.,50.,0.])
-    assert wrapped.error_code == "IK_BRANCH_REJECTED", wrapped.to_json()
+    invalid = motion.move([.3,0.,.2], [0.,50.,0.])
+    assert invalid.error_code == "IK_BRANCH_REJECTED", invalid.to_json()
     assert simulator.goals == simulator.plans == 1
-    simulator.scenario, simulator.positions = "loop", [0.]*6
-    time.sleep(.1)
-    loop = motion.move([.3,0.,.2], [0.,50.,0.])
-    assert loop.error_code == "MOTION_EXCESS_ROTATION", loop.to_json()
-    assert simulator.goals == 1
     simulator.scenario = "fail"
     failed = motion.move([.3,0.,.2], [0.,50.,0.])
     assert failed.error_code == "MOTION_PLAN_FAILED", failed.to_json()
@@ -197,8 +209,14 @@ try:
     simulator.positions = [0.]*6
     time.sleep(.1)
     simulator.scenario="straight"
-    straight=motion.move_cartesian([.3,0.,.1],[0.,50.,0.])
+    straight=motion.move_cartesian([.3,0.,.1],None)
     assert straight.ok and straight.data["cartesian"] and simulator.goals==4, straight.to_json()
+    simulator.scenario="travel";simulator.positions=[0.,0.,0.,.109,0.,0.]
+    time.sleep(.1)
+    travelled=motion.move_cartesian([.348668,-.017547,.003533],None)
+    assert travelled.ok and simulator.goals==5, travelled.to_json()
+    assert abs(travelled.data['travel_rad']['forearm_roll']-5.622836129247646)<1e-9
+    assert abs(travelled.data['delta_rad']['forearm_roll']-.4240422339166976)<1e-9
     from workers.grasp_visualization import GraspVisualizer
     from visualization_msgs.msg import MarkerArray
     from sensor_msgs.msg import PointCloud2
@@ -230,7 +248,7 @@ try:
     assert received["/move_group/display_planned_path"].trajectory[0].joint_trajectory.points
     executor.remove_node(late);late.destroy_node()
     executor.remove_node(visual.node);visual.close();selected.close()
-    print("ROS 模拟验证通过：位姿与直线运动；防绕圈和自动减速；无额外到位等待；RViz 点云、候选、兜底姿态及轨迹支持后加入订阅者。")
+    print("ROS 模拟验证通过：邻近逆解与物理限位；直线运动保持实际朝向；5.62 rad 累计变化不再触发自设阈值；自动减速；无额外到位等待；RViz 数据支持后加入订阅者。")
 
 finally:
     motion.close()

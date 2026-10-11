@@ -42,7 +42,11 @@ def test_multi_object_release_lift_precedes_next_approach(recorded):
     assert recorded[7] == ('gripper_set', {'position': 0.037})
     assert recorded[8][0] == 'move_arm' and recorded[8][1]['z'] == pytest.approx(0.26)
     assert recorded[10][1]['pitch'] == pytest.approx(90)
-    assert all(args['pitch']==pytest.approx(90) for name,args in recorded if name=='move_arm')
+    approaches = [args for name,args in recorded if name=='move_arm' and not args.get('cartesian')]
+    assert len(approaches) == 2
+    assert all(args['pitch']==pytest.approx(90) for args in approaches)
+    assert all(not {'roll','pitch','yaw'}.intersection(args) for name,args in recorded
+               if name=='move_arm' and args.get('cartesian'))
     assert recorded[2][1]['z']==pytest.approx(.065575)
     assert recorded[2][1]['cartesian'] is True
     assert recorded[0] == ('gripper_set', {'position':.037})
@@ -137,7 +141,10 @@ def test_no_model_pose_uses_original_fallback_with_fixed_orientation(recorded):
     assert recorded[1][1]['grasp_debug']['mode']=='fallback'
     assert recorded[2][1]['z']==pytest.approx(.03)
     assert recorded[4][1]['z']==pytest.approx(.21)
-    assert all([args['roll'],args['pitch'],args['yaw']]==[0,50,0] for name,args in recorded if name=='move_arm')
+    approach = recorded[1][1]
+    assert [approach['roll'],approach['pitch'],approach['yaw']]==[0,50,0]
+    assert all(not {'roll','pitch','yaw'}.intersection(args) for name,args in recorded
+               if name=='move_arm' and args.get('cartesian'))
     assert recorded[2][1]['cartesian'] and recorded[4][1]['cartesian']
 
 

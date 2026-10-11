@@ -13,9 +13,8 @@ class PoseMotion:
         from control_msgs.action import FollowJointTrajectory
         from rclpy.action import ActionClient
         self.backend, self.arm = backend, backend.arm()
-        self.policy = MotionPolicy(backend.opts.get("max_joint_change", 2.6),
-                                   backend.opts.get("velocity_scaling", .25),
-                                   backend.opts.get("motion_timeout", 45.))
+        self.policy = MotionPolicy(velocity_scaling=backend.opts.get("velocity_scaling", .25),
+                                   timeout=backend.opts.get("motion_timeout", 45.))
         self.driver = self.arm.node.create_client(RobotInfo, f"/{backend.opts['robot_name']}/get_robot_info")
         self.ik = self.arm.node.create_client(GetPositionIK, "/compute_ik")
         self.planner = self.arm.node.create_client(GetMotionPlan, "/plan_kinematic_path")
@@ -81,24 +80,12 @@ class PoseMotion:
                 raise MotionRejected("MOTION_ROBOT_BUSY", "机械臂仍在运动，停止发送新的位姿轨迹")
         return positions
 
-    @staticmethod
-    def _constraints(start, limits, max_change):
-        from moveit_msgs.msg import Constraints, JointConstraint
-        result = Constraints()
-        for n in ARM_JOINTS:
-            lo, hi, _ = limits[n]
-            result.joint_constraints.append(JointConstraint(joint_name=n, position=start[n], weight=1.,
-                tolerance_above=max(0., min(max_change, hi-start[n])),
-                tolerance_below=max(0., min(max_change, start[n]-lo))))
-        return result
-
     def inverse_solutions(self, xyz, rpy, start, limits, policy):
         from builtin_interfaces.msg import Duration
         from moveit_msgs.srv import GetPositionIK
         from scipy.spatial.transform import Rotation
         quaternion = Rotation.from_euler("xyz", rpy, degrees=True).as_quat()
-        # A small, deterministic seed neighbourhood; all solutions obey the
-        # same absolute-angle budget around the real state, including roll joints.
+        # Prefer IK solutions near the actual state, especially roll joints.
         seeds = [start]
         for sign in (1., -1.):
             seed = dict(start)
@@ -164,7 +151,6 @@ class PoseMotion:
         constraints.joint_constraints = [JointConstraint(joint_name=n, position=target[n],
             tolerance_above=.005, tolerance_below=.005, weight=1.) for n in ARM_JOINTS]
         motion.goal_constraints = [constraints]
-        motion.path_constraints = self._constraints(start, limits, policy.max_joint_change)
         response = self._service(self.planner, request, 6).motion_plan_response
         if response.error_code.val != 1:
             raise MotionRejected("MOTION_PLAN_FAILED", "完整路径规划失败，停止移动；请拆分位置或朝向变化",
@@ -183,11 +169,16 @@ class PoseMotion:
         request.group_name,request.link_name = "interbotix_arm",self.arm.ee_frame
         self._start_state(request.start_state, start)
         pose = Pose(); pose.position.x,pose.position.y,pose.position.z = map(float,xyz)
-        q = Rotation.from_euler("xyz",rpy,degrees=True).as_quat()
-        pose.orientation.x,pose.orientation.y,pose.orientation.z,pose.orientation.w = map(float,q)
+        if rpy is None:
+            current = self.arm.get_current_ee_pose()
+            if current is None:
+                raise MotionRejected("POSE_UNAVAILABLE", "无法读取直线移动所需的当前末端朝向")
+            pose.orientation = current.orientation
+        else:
+            q = Rotation.from_euler("xyz",rpy,degrees=True).as_quat()
+            pose.orientation.x,pose.orientation.y,pose.orientation.z,pose.orientation.w = map(float,q)
         request.waypoints = [pose]
         request.max_step,request.jump_threshold,request.avoid_collisions = .003,0.,True
-        request.path_constraints = self._constraints(start,limits,policy.max_joint_change)
         response = self._service(self.cartesian,request,6)
         if response.error_code.val!=1 or not math.isfinite(response.fraction) or response.fraction<.999:
             raise MotionRejected("CARTESIAN_PATH_INCOMPLETE","进近/撤离的笛卡尔路径不完整，停止执行",

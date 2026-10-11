@@ -1,4 +1,4 @@
-"""Bounded joint motion checks. Angles are absolute radians, never wrapped."""
+"""Driver bounds and timed trajectories. Angles are absolute, never wrapped."""
 from dataclasses import dataclass
 import math
 
@@ -14,13 +14,10 @@ class MotionRejected(RuntimeError):
 
 @dataclass(frozen=True)
 class MotionPolicy:
-    max_joint_change: float = 2.6
     velocity_scaling: float = .25
     timeout: float = 45.
 
     def __post_init__(self):
-        if not math.isfinite(self.max_joint_change) or not 0 < self.max_joint_change <= math.pi:
-            raise ValueError("ARM_MAX_JOINT_CHANGE 必须在 0~pi 弧度之间")
         if not math.isfinite(self.velocity_scaling) or not 0 < self.velocity_scaling <= 1:
             raise ValueError("ARM_VELOCITY_SCALING 必须在 0~1 之间")
         if not math.isfinite(self.timeout) or self.timeout <= 0:
@@ -55,7 +52,7 @@ def check_joints(values, limits, *, feedback=False):
     return result
 
 
-def nearest_solution(candidates, start, limits, policy):
+def nearest_solution(candidates, start, limits):
     if not candidates:
         raise MotionRejected("IK_NO_SOLUTION", "逆解接口未返回有效解；需检查目标可达性、碰撞及求解器错误码",
                              {"ik_solutions": 0})
@@ -66,13 +63,11 @@ def nearest_solution(candidates, start, limits, policy):
         except (MotionRejected, TypeError, ValueError):
             continue
         delta = {n: target[n]-start[n] for n in ARM_JOINTS}
-        if max(abs(v) for v in delta.values()) > policy.max_joint_change:
-            continue
         # Prefer small wrist changes without changing the user's requested pose.
         score = sum((2. if n in ("forearm_roll", "wrist_rotate") else 1.)*v*v for n, v in delta.items())
         accepted.append((score, target))
     if not accepted:
-        raise MotionRejected("IK_BRANCH_REJECTED", "逆解均超出关节限位或本次转角预算，停止移动",
+        raise MotionRejected("IK_BRANCH_REJECTED", "逆解均超出驱动关节限位或数据无效，停止移动",
                              {"ik_solutions": len(candidates)})
     return min(accepted, key=lambda item: item[0])[1]
 
@@ -103,8 +98,6 @@ def validate_trajectory(trajectory, start, target, limits, policy):
                 raise MotionRejected("MOTION_PLAN_INVALID", "规划轨迹速度或加速度数据无效")
         for j, n in enumerate(names):
             travel[n] += abs(positions[n]-previous[n])
-            if abs(positions[n]-start[n]) > policy.max_joint_change+1e-5:
-                raise MotionRejected("MOTION_EXCESS_ROTATION", f"{n} 规划转角过大，停止执行", {"joint": n})
             speed_limit = limits[n][2]*policy.velocity_scaling*1.05 + .01
             speeds = []
             if previous_time is not None:
@@ -121,21 +114,15 @@ def validate_trajectory(trajectory, start, target, limits, policy):
         previous, previous_time = positions, t
     if max(abs(previous[n]-target[n]) for n in names) > .02:
         raise MotionRejected("MOTION_END_MISMATCH", "规划轨迹终点与选定逆解不一致")
-    for n in names:
-        allowed = min(policy.max_joint_change, 1.5*abs(target[n]-start[n])+.35)
-        if travel[n] > allowed+1e-5:
-            raise MotionRejected("MOTION_EXCESS_ROTATION", f"{n} 累计转角或绕路过大，停止执行",
-                                 {"joint": n, "travel_rad": travel[n], "allowed_rad": allowed})
     if previous_time <= 0 or previous_time > policy.timeout-5:
         raise MotionRejected("MOTION_PLAN_DURATION", "规划轨迹时长超出本次运动预算")
-    # Complete the geometry/time checks before deciding whether slowing alone
-    # could make the plan usable. A loop or malformed path must never be repaired
-    # merely because an earlier waypoint also exceeded a speed limit.
+    # Check bounds, endpoints and timing before reconciling driver speed limits.
     if speed_failure is not None:
         raise MotionRejected("MOTION_EXCESS_SPEED", f"{speed_failure['joint']} 规划速度超出限制，停止执行",
                              {**speed_failure, "required_time_scale": required_time_scale,
                               "duration": previous_time})
-    return {"travel_rad": travel, "duration": previous_time, "points": len(trajectory.points),
+    return {"travel_rad": travel, "delta_rad": {n: target[n]-start[n] for n in names},
+            "duration": previous_time, "points": len(trajectory.points),
             "peak_speed_rad_s": peak_speeds}
 
 
@@ -166,7 +153,7 @@ def move_pose(backend, xyz, rpy, policy, audit=lambda event: None):
         data.update(start=start, limits=limits)
         audit({"stage": "start", **data})
         candidates = backend.inverse_solutions(xyz, rpy, start, limits, policy)
-        target = nearest_solution(candidates, start, limits, policy)
+        target = nearest_solution(candidates, start, limits)
         data.update(target=target, delta_rad={n: target[n]-start[n] for n in ARM_JOINTS}, candidates=len(candidates))
         audit({"stage": "ik_selected", **data})
         trajectory = backend.plan(start, target, limits, policy)
@@ -200,17 +187,19 @@ def slow_trajectory(trajectory, scaling):
 
 
 def move_cartesian(backend, xyz, rpy, policy, audit=lambda event: None):
-    """A full straight path uses the same joint/path guards as pose planning."""
-    data = {"position":list(xyz), "rpy":list(rpy), "cartesian":True}
+    """Keep the current orientation unless one was explicitly requested."""
+    data = {"position":list(xyz), "rpy":list(rpy) if rpy is not None else None, "cartesian":True}
     try:
         limits = backend.limits()
         start = check_joints(backend.joints(), limits, feedback=True)
+        data.update(start=start,limits=limits)
         path = backend.cartesian_plan(xyz, rpy, start, limits, policy)
         if not path.points:
             raise MotionRejected("MOTION_PLAN_INVALID", "笛卡尔轨迹为空")
         target = check_joints(dict(zip(path.joint_names,path.points[-1].positions)),limits)
+        data.update(target=target,delta_rad={n:target[n]-start[n] for n in ARM_JOINTS})
         path = slow_trajectory(path,policy.velocity_scaling)
-        data.update(start=start,target=target,**prepare_trajectory(path,start,target,limits,policy))
+        data.update(prepare_trajectory(path,start,target,limits,policy))
         current = check_joints(backend.joints(),limits,feedback=True)
         if max(abs(current[n]-start[n]) for n in ARM_JOINTS)>.03:
             raise MotionRejected("MOTION_ROBOT_MOVED", "笛卡尔规划期间关节变化，停止发送轨迹")

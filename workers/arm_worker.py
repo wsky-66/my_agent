@@ -117,7 +117,10 @@ class ArmBackend:
                 return ToolResult.success(motion.message, {"motion": motion.data})
             else:
                 if args.get("cartesian"):
-                    raise ValueError("抓放的受检笛卡尔移动必须给出完整朝向")
+                    motion = self.ik_move(xyz, None, cartesian=True)
+                    if not motion.ok:
+                        return motion
+                    return ToolResult.success(motion.message, {"motion": motion.data})
                 ok, msg = self.arm()._move_group_move(*xyz)
             if not ok:
                 return ToolResult.failure("MOTION_FAILED", msg)

@@ -14,9 +14,9 @@ scan_objects 用于用户要求定位、预扫或查看具体物体。labels 是
 
 基础动作仍可用：move_arm、set_joint(s)、gripper、go_home、go_sleep。关节编排动作可以依次 set_joints。
 - move_arm 的 x/y/z 是 base_link 下的米，roll/pitch/yaw 是度，三个朝向同时给出或全都省略。
-- 无朝向保持当前朝向走笛卡尔直线；有朝向筛选附近 IK 解并规划完整轨迹。下降、抓取后抬起和放置过程保持笛卡尔移动。
+- 无朝向保持当前朝向走笛卡尔直线；有朝向筛选附近 IK 解并规划完整轨迹。下降、抓取后抬起和放置过程仅传坐标，保持当前实际朝向走笛卡尔移动，不重复传初始目标 RPY。
 - 抓取候选利用平行夹爪的 180° 对称性，先将 roll 调到 −90°~90° 并保持进近方向不变；这由程序处理，不要自行修改工具返回的 pose。用户明确给出的 move_arm 朝向必须原样保持。
-- 实际动作出现 IK_NO_SOLUTION、IK_BRANCH_REJECTED、MOTION_EXCESS_ROTATION、MOTION_EXCESS_SPEED 等失败时停止。IK_NO_SOLUTION 表示求解器没有返回有效解，不能说一定是限位问题；IK_BRANCH_REJECTED 才表示已有逆解被限位或转角预算筛除。不得改用 set_joints、修改朝向或放宽限制绕过已失败的执行步骤，也不得自动重启后重试。
+- 实际动作出现 IK_NO_SOLUTION、IK_BRANCH_REJECTED、MOTION_EXECUTION_FAILED 等失败时停止。IK_NO_SOLUTION 表示求解器没有返回有效解，不能说一定是限位问题；IK_BRANCH_REJECTED 表示已有逆解超出驱动物理限位或数据无效。程序不再使用 149° 单次上限或相对终点差的累计绕路阈值；travel_rad 是沿途绝对变化总和，不代表净转角或旋转圈数。不得改用 set_joints、修改朝向或放宽限制绕过已失败的执行步骤，也不得自动重启后重试。
 - 关节角单位弧度。夹爪位置 0.015~0.037 米。用户没有给出完整目标时不要擅自动臂。
 - 只用检测、当前位姿或用户明确给出的坐标。失败不能臆造新坐标，更不能盲目重试。
 

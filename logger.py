@@ -1,49 +1,54 @@
-"""集中式错误日志：把异常与工具报错写入 logs/agent_error.log（轮转，防无限增长）。"""
-
+"""Lazy rotating error and timing logs; never record keys or full tool arguments."""
+import json
 import logging
-import os
-import re
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
+import threading
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 
-_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-_ERR_WORDS = (
-    "出错", "错误", "失败", "超时", "异常", "无法", "未找到", "不存在", "解析失败",
-    "不可用", "被拒绝", "离线", "未运行", "未就绪", "未收到", "未能", "拒绝连接",
-    # 常见英文错误
-    "error", "exception", "traceback", "failed", "timeout", "refused",
-    "not found", "does not exist", "not running", "unavailable",
-)
-_ERROR_RE = re.compile("|".join(re.escape(w) for w in _ERR_WORDS), re.IGNORECASE)
+turn_id = ContextVar("turn_id", default="")
+_lock = threading.Lock()
 
 
-def _build() -> logging.Logger:
-    logger = logging.getLogger("agent")
-    if logger.handlers:
-        return logger
-    os.makedirs(_LOG_DIR, exist_ok=True)
-    logger.setLevel(logging.INFO)
-    handler = RotatingFileHandler(
-        os.path.join(_LOG_DIR, "agent_error.log"),
-        maxBytes=2_000_000, backupCount=3, encoding="utf-8",
-    )
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"))
-    logger.addHandler(handler)
-    return logger
+def _get(name, filename):
+    log = logging.getLogger(name)
+    with _lock:
+        if not log.handlers:
+            folder = Path(__file__).resolve().parent / "logs"
+            folder.mkdir(exist_ok=True)
+            handler = RotatingFileHandler(folder / filename, maxBytes=2_000_000,
+                                          backupCount=3, encoding="utf-8")
+            handler.setFormatter(logging.Formatter("%(message)s" if name == "agent.metrics"
+                                                  else "%(asctime)s [%(levelname)s] %(message)s"))
+            log.addHandler(handler)
+            log.setLevel(logging.INFO)
+            log.propagate = False
+    return log
 
 
-log = _build()
+def error(msg, exc=None):
+    _get("agent.errors", "agent_error.log").error("%s%s", msg, f" | {exc!r}" if exc else "")
 
 
-def error(msg: str, exc: BaseException = None) -> None:
-    """记录一条错误（可带异常对象）。"""
-    log.error(msg + (f"  |  {exc!r}" if exc is not None else ""))
+def warning(msg):
+    _get("agent.errors", "agent_error.log").warning(msg)
 
 
-def warning(msg: str) -> None:
-    log.warning(msg)
+def record_timing(stage, elapsed, ok=True):
+    _get("agent.metrics", "timings.jsonl").info(json.dumps({
+        "timestamp": time.time(), "turn_id": turn_id.get(), "stage": stage,
+        "elapsed": round(elapsed, 4), "ok": ok,
+    }, ensure_ascii=False))
 
 
-def is_error(text: str) -> bool:
-    """判断工具返回结果是否为错误状态（忽略大小写）。"""
-    return _ERROR_RE.search(text) is not None
+@contextmanager
+def measure(stage):
+    start = time.monotonic()
+    ok = False
+    try:
+        yield
+        ok = True
+    finally:
+        record_timing(stage, time.monotonic() - start, ok)

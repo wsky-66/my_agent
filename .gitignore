@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # 环境与密钥
 .env

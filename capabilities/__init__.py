@@ -1,13 +1,17 @@
-"""能力模块：导入即注册全部工具并为 robot/camera 建立生命周期。"""
+"""Explicit capability loading; importing the package never registers or starts services."""
+import importlib
+from config import config
 
-from . import arm_tools
-from . import robot
-from . import robot_tools
-from . import camera
-from . import camera_tools
-from . import grasp_tools
-from . import grounding_dino_tools
-from . import sam2_tools
-from . import sam2
-from . import position_tools
-from . import scan_tools
+
+def load_tools():
+    modules = []
+    if config.ENABLE_ARM:
+        modules += ["arm_tools", "robot_tools"]
+    if config.ENABLE_CAMERA:
+        modules += ["camera_tools"]
+    if config.ENABLE_VISION and config.ENABLE_CAMERA:
+        modules += ["grounding_dino_tools", "sam2_tools", "position_tools", "grasp_tools", "scan_tools"]
+        if config.ENABLE_ARM:
+            modules += ["workflow_tools"]
+    for name in modules:
+        importlib.import_module(f"capabilities.{name}")

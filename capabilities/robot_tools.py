@@ -1,29 +1,19 @@
-"""机器人进程生命周期工具：让 LLM 也能自行拉起/关闭机器人。"""
-
+"""Robot lifecycle tools."""
 from tools import registry
-from . import robot
+from services import lifecycle
+from core.results import ToolResult
 
 
-@registry.register(
-    name="start_robot",
-    description="拉起并启动机械臂 ROS 进程（含 RViz）。适合在开始机械臂任务前调用。会先清理残留进程再干净启动，服务就绪后返回。",
-)
-def start_robot() -> str:
-    return robot.start_robot()
+@registry.register(description="启动机械臂 ROS 服务；已有服务可复用，不杀死外部进程。")
+def start_robot() -> ToolResult:
+    return lifecycle.robot.start()
 
 
-@registry.register(
-    name="stop_robot",
-    description="关闭机械臂 ROS 进程并清理相关节点。适合在机械臂任务结束、待机或退出前调用。",
-)
-def stop_robot() -> str:
-    robot.stop_robot()
-    return "机器人已停止。"
+@registry.register(description="停止本程序拥有的机械臂服务和连接，外部启动的服务保留。")
+def stop_robot() -> ToolResult:
+    return lifecycle.stop_robot()
 
 
-@registry.register(
-    name="robot_status",
-    description="查询机械臂 ROS 进程是否在运行。",
-)
-def robot_status() -> str:
-    return robot.robot_status()
+@registry.register(description="查询机械臂真实使用的 IK 和笛卡尔服务是否就绪。")
+def robot_status() -> ToolResult:
+    return lifecycle.robot.status()

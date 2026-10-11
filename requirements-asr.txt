@@ -1,0 +1,3 @@
+# Install in ASR_PYTHON's environment. It may be separate from the CLI environment.
+funasr>=1.0.0
+numpy>=1.23.0

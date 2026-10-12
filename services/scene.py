@@ -3,7 +3,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import json
 import math
-import re
 import time
 import uuid
 
@@ -12,19 +11,19 @@ from core.results import ToolResult
 from core.execution import is_cancelled
 from logger import measure
 from services import camera, grounding, grasp, segmentation
+from services.detection_prompt import build_prompt, normalize
 from services.perception import calibrate, position
 
 
-def normalize(label):
-    return " ".join(label.lower().replace("_", " ").replace("-", " ").split())
-
-
-def detection_candidates(objects, label):
+def detection_candidates(objects, label, aliases=None):
     """Count distinct, plausible instances instead of treating all hits equally."""
-    words = label.split()
-    hits = []
+    aliases = aliases or {"names": [label], "generic": []}
+    named, generic = [], []
     for obj in objects:
-        if normalize(str(obj.get("category", ""))).split()[-len(words):]!=words:
+        words = normalize(str(obj.get("category", ""))).split()
+        matches = lambda names: any(words[-len(name.split()):]==name.split() for name in names)
+        source = named if matches(aliases["names"]) else generic if matches(aliases["generic"]) else None
+        if source is None:
             continue
         box = obj.get("bbox")
         if (not isinstance(box,list) or len(box)!=4 or
@@ -33,7 +32,9 @@ def detection_candidates(objects, label):
             continue
         score = obj.get("score",0.)
         if type(score) not in (int,float) or not math.isfinite(score):continue
-        hits.append(dict(category=obj["category"],bbox=box,score=float(score)))
+        source.append(dict(category=obj["category"],bbox=box,score=float(score)))
+    # A matching object name wins over broad colour-only detections.
+    hits = named or generic
     hits.sort(key=lambda o:o["score"],reverse=True)
     distinct = []
     for hit in hits:
@@ -84,28 +85,31 @@ class SceneStore:
 store = SceneStore()
 
 
-def scan(labels, grasp_labels=None):
+def scan(labels, grasp_labels=None, detection_hints=None):
     if not labels or any(not isinstance(s, str) or not s.strip() for s in labels):
         return ToolResult.failure("INVALID_ARGUMENT", "labels 必须为非空物体名称列表")
     labels = list(dict.fromkeys(normalize(s) for s in labels))
     pick_labels = set(labels if grasp_labels is None else map(normalize, grasp_labels))
     if not pick_labels.issubset(labels):
         return ToolResult.failure("INVALID_ARGUMENT", "grasp_labels 必须包含在 labels 中")
+    prompt, aliases = build_prompt(labels, detection_hints)
     store.clear()
     captured = camera.capture()
     if not captured.ok:
         return captured
     snapshot = calibrate(captured.data)
-    detected = grounding.detect(".".join(labels), snapshot["image_path"])
+    detected = grounding.detect(prompt, snapshot["image_path"])
     if not detected.ok:
         return detected
     records, items = {}, []
     folder = Path(snapshot["image_path"]).parent
+    detected.data.update(prompt=prompt)
     (folder/"grounding.json").write_text(json.dumps(detected.data,ensure_ascii=False,indent=2),encoding="utf-8")
     for i, label in enumerate(labels):
-        hits,raw,selection = detection_candidates(detected.data["objects"],label)
+        hits,raw,selection = detection_candidates(detected.data["objects"],label,aliases[label])
         rec = {"object_id": f"object_{i}", "label": label, "ok": False, "grasps": [], "instances": len(hits),
-               "raw_instances":len(raw),"detections":raw,"selection":selection}
+               "raw_instances":len(raw),"detections":raw,"selection":selection,
+               "detection_aliases":aliases[label]}
         records[label] = rec
         if not hits:
             rec.update(error_code="OBJECT_NOT_FOUND", error="未检测到目标")

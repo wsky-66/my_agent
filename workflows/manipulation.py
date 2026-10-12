@@ -25,7 +25,8 @@ def _grasp(value, snapshot):
                 Rotation.from_euler("xyz",_xyz(value["rpy"]),degrees=True).as_matrix())
     t = np.eye(4); t[:3,:3] = rotation; rigid_transform(t)
     rotation = preferred_grasp_rotation(rotation)
-    return position, rotation_rpy(rotation), dict(value, rotation=rotation.tolist(),mode="graspnet")
+    mode = "grcnn" if value.get("pipeline")=="grcnn" else "graspnet"
+    return position, rotation_rpy(rotation), dict(value, rotation=rotation.tolist(),mode=mode)
 
 
 def _xyz(value):
@@ -138,7 +139,9 @@ def execute(actions, scene_id=None, return_to_sleep=True, allow_fallback=True):
         orientation = dict(roll=rpy[0],pitch=rpy[1],yaw=rpy[2])
         strategy = {"object":action["object"],"mode":debug["mode"],"position":[x,y,grasp_z],"rpy":rpy}
         strategies.append(strategy)
-        report("grasp_strategy",strategy,ToolResult.success("使用 GraspNet pose" if debug["mode"]=="graspnet" else "无抓取 pose，使用原版定位坐标和固定姿态兜底"))
+        message = {"graspnet":"使用 GraspNet pose", "grcnn":"使用 GR-CNN pose",
+                   "fallback":"无抓取 pose，使用原版定位坐标和固定姿态兜底"}[debug["mode"]]
+        report("grasp_strategy",strategy,ToolResult.success(message))
         sequence = [
             ("gripper_set", {"position": 0.037}, 0.),
             ("move_arm", dict(x=x, y=y, z=z+0.10, **orientation, grasp_debug=debug), 0.),

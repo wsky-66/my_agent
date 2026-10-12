@@ -1,6 +1,6 @@
 # my_agent · ww
 
-通过自然语言、视觉和工具调用控制 Interbotix wx250s 与 RealSense 的终端助手。支持流式对话、Tab 语音输入、图像理解、开放集检测、SAM2 分割、GraspNet 推理与多物体抓放。
+通过自然语言、视觉和工具调用控制 Interbotix wx250s 与 RealSense 的终端助手。支持流式对话、Tab 语音输入、图像理解、开放集检测、SAM2 分割、GraspNet / GR-CNN 推理与多物体抓放。
 
 ![终端界面示例](docs/ui-preview.png)
 
@@ -56,13 +56,24 @@ python3 main.py
 }
 ```
 
-也可提供 `target_position: [x, y, z]`，与 `target` 二选一；单位为机械臂基座坐标系下的米。普通抓放自动扫描一次，分割所有目标，只对需要抓取的源物体进行 GraspNet 推理。`scan_objects(labels, grasp_labels)` 可单独预扫，再在同一回合内传入返回的 `scene_id`。
+也可提供 `target_position: [x, y, z]`，与 `target` 二选一；单位为机械臂基座坐标系下的米。普通抓放自动扫描一次，分割所有目标，只对需要抓取的源物体运行配置的抓取模型。`scan_objects(labels, grasp_labels)` 可单独预扫，再在同一回合内传入返回的 `scene_id`。
 
 同一场景内物体移动后，旧坐标不能重复用于该物体。多个同名实例、无有效深度、动作失败或取消都会停止后续步骤。场景在新回合、重置、服务关闭或超过 `SCENE_MAX_AGE` 时失效。
 
 有抓取 pose 时取最高分候选，处理 roll 范围后用 MoveIt 求解；没有 pose 时默认恢复定位坐标加 `[0°,50°,0°]` 的原版兜底。`allow_fallback=false` 可明确禁用兜底。原版 GraspNet 模型碰撞、去重、分数和高度过滤继续使用，取消后加的多区域搜索、桌面拟合、STL 扫掠筛选和八候选预检。
 
-GraspNet 的接触参考位置按 depth 转换为末端目标，下降到该目标；兜底沿用旧版定位高度下方 3 cm。两条路径均先张开到 0.037 m，再到上方 10 cm、下降、闭合到 0.024 m，最后抬到上方 15 cm。动作序列完成不代表视觉确认夹持成功。流程与 RViz 配置见 [抓取流程](docs/grasping.md)。
+模型的接触参考位置按 depth 转换为末端目标，下降到该目标；兜底沿用旧版定位高度下方 3 cm。两条路径均先张开到 0.037 m，再到上方 10 cm、下降、闭合到 0.024 m，最后抬到上方 15 cm。动作序列完成不代表视觉确认夹持成功。流程与 RViz 配置见 [抓取流程](docs/grasping.md)。
+
+可部署作者的 Cornell RGB-D GR-CNN 权重，使用现有 `VISION_PYTHON` 环境：
+
+```bash
+python3 scripts/setup_grcnn.py
+GRASP_BACKEND=grcnn python3 main.py
+# 改回 GraspNet：
+GRASP_BACKEND=graspnet python3 main.py
+```
+
+在 `.env` 写入 `GRASP_BACKEND=grcnn` 后，直接 `python3 main.py` 即可。启动显示当前抓取后端；工作流报告 `grcnn`、`graspnet` 或 `fallback`。两个后端共用 MoveIt、松爪后 0.5 秒等待及 RViz。GR-CNN 的平面抓取通过相机标定转为基座坐标，竖直进近；没有可执行 pose 时继续用原兜底。部署、只预测测试和已保存场景结果见 [GR-CNN 测试说明](docs/grcnn.md)。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -118,7 +129,7 @@ core/                   类型校验、结构化结果、进程协议、取消�
 capabilities/           面向模型的薄工具接口，显式按配置注册
 workflows/              确定性的多步抓放流程
 services/               机械臂、RGB-D、视觉模型与场景缓存
-workers/                常驻子进程中的 ROS / SAM2 / GraspNet / ASR 适配
+workers/                常驻子进程中的 ROS / SAM2 / GraspNet / GR-CNN / ASR 适配
 prompts/system.md       模型行为与工具使用约定
 tests/                  无硬件的回归测试
 docs/architecture.md    数据流、生命周期和性能变化

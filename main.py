@@ -154,6 +154,8 @@ def main():
         ui.error(str(exc))
         return 1
     ui.banner(config.MODEL, config.BASE_URL, len(registry.list_tools()))
+    if config.ENABLE_VISION:
+        ui.notice("抓取后端：" + {"graspnet":"GraspNet", "grcnn":"GR-CNN"}[config.GRASP_BACKEND])
     exit_requested = False
 
     def on_term(signum, frame):

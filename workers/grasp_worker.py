@@ -1,4 +1,4 @@
-"""Load GraspNet once; infer all masks using the supplied immutable RGB-D scene."""
+"""Load one grasp model; infer all masks using the supplied immutable RGB-D scene."""
 import sys
 
 from core.results import ToolResult
@@ -16,9 +16,8 @@ class GraspBackend:
     def __call__(self, action, params):
         import cv2
         import numpy as np
-        import graspnet_client as backend
         if action != "infer":
-            raise ValueError("未知 GraspNet 动作")
+            raise ValueError("未知抓取推理动作")
         snapshot = params["snapshot"]
         color = cv2.imread(snapshot["image_path"])
         if color is None:
@@ -30,17 +29,25 @@ class GraspBackend:
         k = snapshot["intrinsics"]
         transform = np.asarray(snapshot["extrinsics"], dtype=float)
         from core.grasp_geometry import rigid_transform
-        from workers.grasp_pipeline import GraspPipeline
         transform = rigid_transform(transform)
         if len(k)!=9 or not np.isfinite(k).all() or k[0]<=0 or k[4]<=0:
             raise ValueError("相机内参无效")
         score_min = float(params.get("score_min", 0))
         if not np.isfinite(score_min) or not 0 <= score_min <= 1:
             raise ValueError("score_min 必须在 0~1 之间")
-        if self.model is None:
-            self.model = backend.load_model()
         if self.pipeline is None:
-            self.pipeline = GraspPipeline(backend, self.model)
+            name = self.opts.get("grasp_backend", "graspnet")
+            if name == "grcnn":
+                from workers.grcnn_pipeline import GrCNNPipeline
+                self.pipeline = GrCNNPipeline(self.opts)
+            elif name == "graspnet":
+                import graspnet_client as backend
+                from workers.grasp_pipeline import GraspPipeline
+                if self.model is None:
+                    self.model = backend.load_model()
+                self.pipeline = GraspPipeline(backend, self.model)
+            else:
+                raise ValueError(f"未知抓取后端 {name}")
         masks = []
         for item in params["items"]:
             label, mask_path = item["label"], item.get("mask_path")

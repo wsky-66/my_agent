@@ -1,4 +1,4 @@
-"""Model adapter to the persistent GraspNet service."""
+"""Model adapter to the configured persistent grasp service."""
 from pathlib import Path
 from config import config
 from core.results import ToolResult
@@ -6,7 +6,7 @@ from tools import registry
 from services import grasp
 
 
-@registry.register(description="基于当前 RGB-D 和物体 mask 运行原版 GraspNet 推理与碰撞过滤。返回 position、rotation、rpy、depth、width 和 ee_position，roll 使用平行夹爪对称性调到 −90°~90°；发布点云和抓取框供 RViz 查看。no_collision=true 的结果仅供查看，不能用于抓放。模型常驻复用。")
+@registry.register(description="基于当前 RGB-D 和物体 mask 运行配置的 GraspNet 或 GR-CNN 推理与模型碰撞过滤。返回 pipeline 表示实际后端，及 position、rotation、rpy、depth、width 和 ee_position；发布分割点云和抓取框供 RViz 查看。no_collision=true 的结果仅供查看，不能用于抓放。模型常驻复用。")
 def detect_grasp(top: int = 5, no_collision: bool = False, score_min: float = 0,
                  use_mask: bool = True, mask_path: str = None) -> ToolResult:
     path = mask_path or config.WORKSPACE_MASK

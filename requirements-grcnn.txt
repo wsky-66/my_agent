@@ -1,0 +1,5 @@
+# Install in VISION_PYTHON, not the CLI or ROS system environment.
+numpy>=1.23
+opencv-python>=4.5
+scipy>=1.8
+torch>=2.0

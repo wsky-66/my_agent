@@ -104,15 +104,14 @@ def scan(labels, grasp_labels=None):
                  if lb in pick_labels and r["ok"]]
         with measure("vision.grasp"):
             inferred = grasp.infer(picks, snapshot, top=3, score_min=config.GRASP_SCORE_MIN)
+        if not inferred.ok:
+            return ToolResult.failure(inferred.error_code,"抓取模型推理失败："+inferred.message,inferred.data)
         for item in picks:
             rec = records[item["label"]]
-            if inferred.ok:
-                rec["grasps"] = inferred.data.get(item["label"], [])
-                rec["grasp_diagnostics"] = inferred.data.get("_diagnostics", {}).get(item["label"], {})
-                if inferred.data.get("_visualization_error"):
-                    rec["grasp_visualization_error"] = inferred.data["_visualization_error"]
-            else:
-                rec["grasp_error"] = inferred.message
+            rec["grasps"] = inferred.data.get(item["label"], [])
+            rec["grasp_diagnostics"] = inferred.data.get("_diagnostics", {}).get(item["label"], {})
+            if inferred.data.get("_visualization_error"):
+                rec["grasp_visualization_error"] = inferred.data["_visualization_error"]
     if is_cancelled():
         return ToolResult.failure("TASK_CANCELLED", "任务已中断，场景不再缓存")
     plan = ScenePlan(uuid.uuid4().hex, snapshot, records)

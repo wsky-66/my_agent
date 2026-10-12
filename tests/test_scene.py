@@ -63,3 +63,10 @@ def test_cancelled_scan_cannot_restore_old_scene(monkeypatch, tmp_path):
         assert result.error_code == 'TASK_CANCELLED' and scene.store.plan is None
     finally:
         current.reset(token)
+
+
+def test_model_load_failure_is_not_reported_as_a_valid_scene_for_fallback(monkeypatch,tmp_path):
+    setup_scene(monkeypatch,tmp_path)
+    monkeypatch.setattr(scene.grasp,'infer',lambda *a,**kw:ToolResult.failure('BACKEND_ERROR','checkpoint missing'))
+    result=scene.scan(['apple'],['apple'])
+    assert result.error_code=='BACKEND_ERROR' and scene.store.plan is None

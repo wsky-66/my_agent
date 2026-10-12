@@ -272,6 +272,13 @@ def test_roll_is_normalized_before_the_pose_is_sent_to_moveit(recorded):
     assert recorded[1][1]['yaw']==pytest.approx(20)
 
 
+def test_grcnn_pose_uses_shared_workflow_and_reports_the_actual_model(recorded):
+    value=plan();value.objects['apple']['grasps'][0]['pipeline']='grcnn'
+    result=execute([{'object':'apple'}],'scene',return_to_sleep=False)
+    assert result.ok and result.data['strategies'][0]['mode']=='grcnn'
+    assert len(recorded)==5 and recorded[1][1]['grasp_debug']['mode']=='grcnn'
+
+
 def test_expiry_before_first_move_prevents_any_command(recorded,monkeypatch):
     value=plan();original=store.get;count=[]
     def get(scene_id):

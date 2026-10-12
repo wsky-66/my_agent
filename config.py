@@ -60,6 +60,10 @@ class Config:
         self.TTS_VOICE = os.getenv("TTS_VOICE", "zh-CN-YunxiNeural")
         self.SCENE_MAX_AGE = float(os.getenv("SCENE_MAX_AGE", "300"))
         self.GRASP_SCORE_MIN = float(os.getenv("GRASP_SCORE_MIN", "0"))
+        self.GRASP_BACKEND = os.getenv("GRASP_BACKEND", "graspnet").lower()
+        self.GRCNN_ROOT = _path("GRCNN_ROOT", ROOT / ".runtime/grcnn/upstream")
+        self.GRCNN_CHECKPOINT = _path("GRCNN_CHECKPOINT", ROOT / ".runtime/grcnn/model.pt")
+        self.GRCNN_DEVICE = os.getenv("GRCNN_DEVICE", "auto").lower()
         self.SHUTDOWN_SLEEP_TIMEOUT = float(os.getenv("SHUTDOWN_SLEEP_TIMEOUT", "30"))
         self.SLEEP_JOINT_TOLERANCE = float(os.getenv("SLEEP_JOINT_TOLERANCE", "0.03"))
         self.ARM_VELOCITY_SCALING = float(os.getenv("ARM_VELOCITY_SCALING", "0.25"))
@@ -75,6 +79,10 @@ class Config:
             raise ValueError("工具轮数和超时必须为正数。")
         if not math.isfinite(self.GRASP_SCORE_MIN) or not 0 <= self.GRASP_SCORE_MIN <= 1:
             raise ValueError("GRASP_SCORE_MIN 必须在 0~1 之间。")
+        if self.GRASP_BACKEND not in {"graspnet", "grcnn"}:
+            raise ValueError("GRASP_BACKEND 必须为 graspnet 或 grcnn。")
+        if self.GRCNN_DEVICE not in {"auto", "cpu", "cuda"}:
+            raise ValueError("GRCNN_DEVICE 必须为 auto、cpu 或 cuda。")
         if not math.isfinite(self.SLEEP_JOINT_TOLERANCE) or not 0 < self.SLEEP_JOINT_TOLERANCE <= .1:
             raise ValueError("SLEEP_JOINT_TOLERANCE 必须在 0~0.1 弧度之间。")
         from core.motion import MotionPolicy

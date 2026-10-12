@@ -47,3 +47,14 @@ def test_mask_from_another_image_is_rejected_without_recapturing(monkeypatch, sn
     monkeypatch.setattr(camera, 'capture', lambda: pytest.fail('must reuse snapshot'))
     monkeypatch.setattr(segmentation, '_mask_sources', {str(mask.resolve()): ('other.png', mask.stat().st_mtime_ns)})
     assert perception.position(mask_path=str(mask)).error_code == 'MASK_SCENE_MISMATCH'
+
+
+@pytest.mark.parametrize('ok',[True,False])
+def test_physical_command_invalidates_camera_snapshot_even_if_it_fails(monkeypatch,snapshot,ok):
+    from services import arm,health
+    from core.results import ToolResult
+    monkeypatch.setattr(camera,'_last',snapshot)
+    monkeypatch.setattr(health,'robot_status',lambda:ToolResult.success('ready'))
+    monkeypatch.setattr(arm.client,'request',lambda *args:ToolResult.success('done') if ok else ToolResult.failure('MOTION_FAILED','failed'))
+    assert arm.call('move_arm',x=.3,y=0,z=.2).ok==ok
+    assert camera.latest() is None

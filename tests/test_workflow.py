@@ -56,6 +56,7 @@ def test_multi_object_release_lift_precedes_next_approach(recorded):
     assert recorded[0] == ('gripper_set', {'position':.037})
     assert not any(name=='inspect_grasps' for name,args in recorded)
     assert all(v['mode']=='graspnet' for v in result.data['strategies'])
+    assert result.data['execution_completed'] and not result.data['grasp_verified'] and not result.data['placement_verified']
     assert recorded[-1][0] == 'go_sleep'
     assert sum(name == 'go_sleep' for name, _ in recorded) == 1
     assert value.moved == {'apple', 'banana'}

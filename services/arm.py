@@ -14,6 +14,12 @@ def call(action, **params):
     ready = robot_status()
     if not ready.ok:
         return ready
+    if action in {"move_arm","set_joints","go_home","go_sleep","gripper_set"}:
+        try:
+            return client.request(action, params)
+        finally:
+            from services import camera
+            camera.clear_latest()
     return client.request(action, params)
 
 

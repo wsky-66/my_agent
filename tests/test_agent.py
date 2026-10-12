@@ -121,3 +121,37 @@ def test_api_exception_rolls_back_history():
     with pytest.raises(RuntimeError):
         list(agent.stream('新任务'))
     assert len(agent.messages) == 1 and current.get() is None
+
+
+def test_failed_workflow_disables_tools_in_followup_round_and_cannot_reorder_or_use_shell():
+    registry=ToolRegistry();invoked=[]
+    @registry.register
+    def execute_pick_place():
+        invoked.append('workflow')
+        return ToolResult.failure('SCENE_INCOMPLETE','红辣椒目标不明确')
+    @registry.register
+    def run_shell():
+        invoked.append('shell')
+        return ToolResult.success('shell')
+    client=Client([Response([chunk(calls=[call(0,'execute_pick_place','{}','c1')])]),
+                   Response([chunk('我先抓香蕉',calls=[call(0,'run_shell','{}','c2'),call(1,'execute_pick_place','{}','c3')])])])
+    events=list(Agent(client,registry).stream('辣椒放箱子，香蕉放碗'))
+    assert invoked==['workflow'] and len(client.requests)==2
+    assert client.requests[1]['tools'] is None
+    assert events[-1].type=='response' and '已停止' in events[-1].text
+    assert sum(e.type=='tool_call' for e in events)==1 and all(r.closed for r in client.responses)
+    assert not any('先抓香蕉' in e.text for e in events if e.type=='content')
+
+
+def test_user_clarification_starts_new_turn_with_tools_enabled_after_failure():
+    registry=ToolRegistry();invoked=[]
+    @registry.register
+    def execute_pick_place():
+        invoked.append('workflow')
+        return ToolResult.failure('SCENE_INCOMPLETE','目标不明确') if len(invoked)==1 else ToolResult.success('done')
+    client=Client([Response([chunk(calls=[call(0,'execute_pick_place','{}','c1')])]),Response([chunk('请明确目标')]),
+                   Response([chunk(calls=[call(0,'execute_pick_place','{}','c2')])]),Response([chunk('动作序列完成')])])
+    agent=Agent(client,registry)
+    list(agent.stream('抓辣椒放箱子，香蕉放碗'))
+    list(agent.stream('红色的辣椒'))
+    assert len(invoked)==2 and client.requests[1]['tools'] is None and client.requests[2]['tools']

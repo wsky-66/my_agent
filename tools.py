@@ -9,7 +9,7 @@ from core.results import ToolResult
 from core.runtime import terminate
 
 
-@registry.register(description="执行 Shell 命令，返回标准输出、错误输出和退出码。")
+@registry.register(description="用于用户明确要求的命令或项目维护，返回 stdout、stderr 和退出码。常规视觉、抓放、目标澄清不使用此工具，不能用它寻找旧场景或绕过工作流失败。")
 def run_shell(command: str) -> ToolResult:
     if is_cancelled():
         return ToolResult.failure("TASK_CANCELLED", "任务已中断")

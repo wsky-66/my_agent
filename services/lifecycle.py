@@ -167,7 +167,7 @@ def close_all(notify=lambda message, ok=True: None):
                 except (Exception, KeyboardInterrupt) as exc:
                     swept = ToolResult.failure("SHUTDOWN_SWEEP_FAILED", str(exc))
                 notify(swept.message, swept.ok)
-            data = {"sleep": {"ok": parked.ok, "message": parked.message, **parked.data},
+            data = {"sleep": {"ok": parked.ok, "message": parked.message, "error_code":parked.error_code, **parked.data},
                     "cleanup": {"ok": swept.ok, **swept.data}, "failures": failures}
             if failures or not swept.ok:
                 result = ToolResult.failure("SHUTDOWN_INCOMPLETE", "退出清理未完成，请查看日志和残留进程", data)
@@ -175,6 +175,15 @@ def close_all(notify=lambda message, ok=True: None):
                 result = ToolResult.failure("SLEEP_NOT_CONFIRMED", "进程清理已完成，但未确认机械臂已到 Sleep", data)
             else:
                 result = ToolResult.success("退出清理完成", data)
+            if session and (session["arm"] or session["camera"]):
+                try:
+                    import json
+                    import time
+                    (config.ROOT/"logs/shutdown_result.json").write_text(json.dumps(
+                        {"timestamp":time.time(),"ok":result.ok,"message":result.message,"error_code":result.error_code,"data":data},
+                        ensure_ascii=False,indent=2),encoding="utf-8")
+                except (OSError,TypeError,ValueError) as exc:
+                    error("退出结果日志保存失败",exc)
             if session:
                 _shutdown_result = result
             return result

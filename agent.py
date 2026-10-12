@@ -19,6 +19,8 @@ from logger import error, record_timing, turn_id
 from tools import registry
 
 SYSTEM_PROMPT = (Path(__file__).resolve().parent / "prompts/system.md").read_text(encoding="utf-8")
+STOP_ON_FAILURE = {"execute_pick_place", "scan_objects", "move_arm", "set_joints", "set_joint", "go_home", "go_sleep",
+                   "gripper_set", "gripper_open", "gripper_close", "gripper_grasp"}
 
 
 @dataclass
@@ -100,6 +102,7 @@ class Agent:
         timing_token = turn_id.set(uuid.uuid4().hex)
         started = time.monotonic()
         finished = False
+        stopped = None
         try:
             self.messages.append({"role": "user", "content": self._build_content(user_input, image_path)})
             for _ in range(config.MAX_TOOL_ROUNDS):
@@ -109,8 +112,13 @@ class Agent:
                 parts, calls = [], {}
                 first_token = False
                 try:
+                    messages = self.messages
+                    if stopped is not None:
+                        messages = self.messages + [{"role":"system","content":
+                            "本轮任务因工具失败已经停止。仅用现有结果说明失败、已执行和未完成部分；目标仍有歧义时询问目标。"
+                            "不要调用工具、不要重排或跳过原动作，也不要编造画面或宣称抓放已被视觉确认。"}]
                     response = self.client.chat.completions.create(
-                        model=config.MODEL, messages=self.messages, tools=self.tool_schemas or None,
+                        model=config.MODEL, messages=messages, tools=(self.tool_schemas or None) if stopped is None else None,
                         stream=True, parallel_tool_calls=False)
                     for chunk in response:
                         if not chunk.choices:
@@ -121,7 +129,8 @@ class Agent:
                             first_token = True
                         if delta.content:
                             parts.append(delta.content)
-                            yield AgentEvent(type="content", text=delta.content)
+                            if stopped is None:
+                                yield AgentEvent(type="content", text=delta.content)
                         for call in delta.tool_calls or []:
                             entry = calls.setdefault(call.index, {"id": "", "name": "", "arguments": ""})
                             if call.id:
@@ -135,6 +144,12 @@ class Agent:
                         response.close()
                     record_timing("llm.request", time.monotonic()-request_start, request_ok)
                 text = "".join(parts)
+                if calls and stopped is not None:
+                    text = stopped.message+"。本轮已停止后续操作。"
+                    calls = {}
+                if stopped is not None and not calls:
+                    text = text or stopped.message+"。本轮已停止后续操作。"
+                    yield AgentEvent(type="content",text=text)
                 if not calls:
                     self.messages.append({"role": "assistant", "content": text})
                     self._compact()
@@ -160,6 +175,8 @@ class Agent:
                     except ValueError as exc:
                         result = ToolResult.failure("INVALID_ARGUMENT", str(exc))
                     failed = failed or not result.ok
+                    if not result.ok and call["name"] in STOP_ON_FAILURE and stopped is None:
+                        stopped = result
                     self.messages.append({"role": "tool", "tool_call_id": call["id"], "content": result.to_json()})
                     yield AgentEvent(type="tool_result", name=call["name"], result=result, elapsed=result.elapsed)
             text = "已达到工具调用轮数上限，停止后续操作。"

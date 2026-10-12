@@ -177,4 +177,5 @@ def execute(actions, scene_id=None, return_to_sleep=True, allow_fallback=True):
             plan.invalid = True
             return ToolResult.failure(result.error_code, "抓放步骤完成，但收拢失败：" + result.message,
                                       {"completed": completed, "steps": steps})
-    return ToolResult.success("抓放动作序列完成", {"completed": completed, "scene_id": scene_id, "strategies":strategies, "steps": steps})
+    return ToolResult.success("抓放动作序列完成", {"completed": completed, "scene_id": scene_id, "strategies":strategies, "steps": steps,
+                            "execution_completed":True,"grasp_verified":False,"placement_verified":False})

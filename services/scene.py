@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 import json
+import math
 import re
 import time
 import uuid
@@ -18,6 +19,37 @@ def normalize(label):
     return " ".join(label.lower().replace("_", " ").replace("-", " ").split())
 
 
+def detection_candidates(objects, label):
+    """Count distinct, plausible instances instead of treating all hits equally."""
+    words = label.split()
+    hits = []
+    for obj in objects:
+        if normalize(str(obj.get("category", ""))).split()[-len(words):]!=words:
+            continue
+        box = obj.get("bbox")
+        if (not isinstance(box,list) or len(box)!=4 or
+                any(type(v) not in (int,float) or not math.isfinite(v) for v in box) or
+                box[0]>=box[2] or box[1]>=box[3]):
+            continue
+        score = obj.get("score",0.)
+        if type(score) not in (int,float) or not math.isfinite(score):continue
+        hits.append(dict(category=obj["category"],bbox=box,score=float(score)))
+    hits.sort(key=lambda o:o["score"],reverse=True)
+    distinct = []
+    for hit in hits:
+        a = hit["bbox"]
+        duplicate = False
+        for other in distinct:
+            b = other["bbox"]
+            intersection = max(0,min(a[2],b[2])-max(a[0],b[0]))*max(0,min(a[3],b[3])-max(a[1],b[1]))
+            union = (a[2]-a[0])*(a[3]-a[1])+(b[2]-b[0])*(b[3]-b[1])-intersection
+            if intersection/union>=.75:duplicate=True;break
+        if not duplicate:distinct.append(hit)
+    if len(distinct)>1 and distinct[0]["score"]>=.5 and distinct[1]["score"]<distinct[0]["score"]*.5:
+        return distinct[:1],hits,"confidence_dominant"
+    return distinct,hits,"single" if len(distinct)==1 else "ambiguous"
+
+
 @dataclass
 class ScenePlan:
     scene_id: str
@@ -29,6 +61,7 @@ class ScenePlan:
 
     def public(self):
         return {"scene_id": self.scene_id, "created": self.created, "frame": self.snapshot["base_frame"],
+                "image_path":self.snapshot["image_path"],
                 "objects": self.objects, "plan_path": str(Path(self.snapshot["image_path"]).parent / "plan.json")}
 
 
@@ -68,12 +101,11 @@ def scan(labels, grasp_labels=None):
         return detected
     records, items = {}, []
     folder = Path(snapshot["image_path"]).parent
+    (folder/"grounding.json").write_text(json.dumps(detected.data,ensure_ascii=False,indent=2),encoding="utf-8")
     for i, label in enumerate(labels):
-        words = label.split()
-        hits = [obj for obj in detected.data["objects"]
-                if normalize(str(obj.get("category", ""))).split()[-len(words):] == words]
-        hits = [o for o in hits if isinstance(o.get("bbox"), list) and len(o["bbox"]) == 4]
-        rec = {"object_id": f"object_{i}", "label": label, "ok": False, "grasps": [], "instances": len(hits)}
+        hits,raw,selection = detection_candidates(detected.data["objects"],label)
+        rec = {"object_id": f"object_{i}", "label": label, "ok": False, "grasps": [], "instances": len(hits),
+               "raw_instances":len(raw),"detections":raw,"selection":selection}
         records[label] = rec
         if not hits:
             rec.update(error_code="OBJECT_NOT_FOUND", error="未检测到目标")

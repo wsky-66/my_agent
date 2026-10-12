@@ -73,6 +73,9 @@ def test_sleep_check_rejects_missing_or_nonfinite_positions():
 
 @pytest.fixture
 def shutdown_session(monkeypatch, tmp_path):
+    from config import config
+    (tmp_path/'logs').mkdir()
+    monkeypatch.setattr(config,'ROOT',tmp_path)
     events = []
     monkeypatch.setattr(lifecycle, '_shutdown_result', None)
     monkeypatch.setattr(lifecycle, '_session', {'lock': NS(close=lambda: events.append('unlock')), 'arm': True, 'camera': True})
@@ -119,6 +122,20 @@ def test_sleep_failure_still_kills_and_releases_every_resource(shutdown_session,
     assert result.error_code == 'SLEEP_NOT_CONFIRMED'
     assert 'stop_robot' in shutdown_session and 'stop_camera_launch' in shutdown_session and 'sweep' in shutdown_session
     assert shutdown_session[-1] == 'unlock'
+
+
+def test_shutdown_saves_specific_sleep_failure_without_changing_cleanup(shutdown_session,monkeypatch,tmp_path):
+    import json
+    from config import config
+    (tmp_path/'logs').mkdir(exist_ok=True)
+    monkeypatch.setattr(config,'ROOT',tmp_path)
+    monkeypatch.setattr(shutdown,'park_robot',lambda:ToolResult.failure('SHUTDOWN_SLEEP_UNCONFIRMED','无法确认 Sleep',
+        {'max_joint_error':.041,'sleep_verified':False}))
+    result=lifecycle.close_all()
+    saved=json.loads((tmp_path/'logs/shutdown_result.json').read_text())
+    assert saved['error_code']==result.error_code=='SLEEP_NOT_CONFIRMED'
+    assert saved['data']['sleep']['max_joint_error']==.041 and 'sweep' in shutdown_session
+    assert saved['data']['sleep']['error_code']=='SHUTDOWN_SLEEP_UNCONFIRMED'
 
 
 def test_worker_close_failure_does_not_skip_other_cleanup(shutdown_session, monkeypatch):

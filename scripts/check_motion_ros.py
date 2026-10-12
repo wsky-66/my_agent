@@ -118,6 +118,7 @@ class Simulator(Node):
     def execute(self, handle):
         self.goals += 1
         goal = handle.request
+        self.last_trajectory = goal.trajectory
         assert goal.goal_time_tolerance.sec == 2
         assert not goal.goal_tolerance and not goal.path_tolerance
         points = handle.request.trajectory.points
@@ -234,6 +235,7 @@ try:
     assert travelled.data['original_duration']==2.2 and travelled.data['time_scale']>1.
     assert travelled.data['duration']<8., 'slow only to the driver target, without a separate 4x stretch'
     from workers.grasp_visualization import GraspVisualizer
+    from workers.grasp_pipeline import GraspPipeline
     from visualization_msgs.msg import MarkerArray
     from sensor_msgs.msg import PointCloud2
     from moveit_msgs.msg import DisplayTrajectory
@@ -241,7 +243,12 @@ try:
     import numpy as np
     visual=GraspVisualizer();selected=GraspVisualizer(client)
     executor.add_node(visual.node)
-    visual.publish_scene(np.array([[.3,0,.05]]*4),np.array([[1.,0.,0.]]*4),
+    pipeline=GraspPipeline(None,None)
+    pipeline.valid=np.ones((2,3),bool)
+    pipeline.points=np.array([[.3,0,.05],[.9,.9,.9],[.31,0,.05],[.32,0,.05],[.9,.9,.9],[.33,0,.05]])
+    pipeline.colors=np.array([[1.,0.,0.],[0.,1.,0.],[1.,0.,0.],[1.,0.,0.],[0.,1.,0.],[1.,0.,0.]])
+    points,colors=pipeline.segmented_cloud([np.array([[True,False,True],[True,False,True]])])
+    visual.publish_scene(points,colors,
         [dict(label="pepper",position=[.3,0,.05],rpy=[0,50,0],width=.04,depth=.02,score=.3)],"base")
     selected.publish_selection(dict(label="pepper",mode="fallback",position=[.3,0,.03],rpy=[0,50,0]),"base")
     late=Node("rviz_late_subscriber");executor.add_node(late);received={}
@@ -253,18 +260,31 @@ try:
     while len(received)<4 and time.monotonic()<until:time.sleep(.02)
     assert len(received)==4, list(received)
     pc=received["/graspnet/pointcloud"]
-    assert pc.header.frame_id=="base" and pc.width==1 and len(pc.data)==16
-    assert np.frombuffer(pc.data,dtype='<u4')[3]==0xff0000
+    assert pc.header.frame_id=="base" and pc.width==4 and len(pc.data)==64
+    assert np.all(np.frombuffer(pc.data,dtype='<u4').reshape(-1,4)[:,3]==0xff0000)
+    assert np.max(np.frombuffer(pc.data,dtype='<f4').reshape(-1,4)[:,:3])<.4
     markers=received["/graspnet/grasps"].markers
     assert markers[0].action==markers[0].DELETEALL
     assert len(next(m for m in markers if m.ns=='gripper').points)==96
     arrow=next(m for m in markers if m.ns=='approach')
     assert arrow.points[1].x>arrow.points[0].x and arrow.points[1].z<arrow.points[0].z
     assert next(m for m in received["/graspnet/selected_grasp"].markers if m.ns=='label').text.endswith('fallback')
-    assert received["/move_group/display_planned_path"].trajectory[0].joint_trajectory.points
+    displayed=received["/move_group/display_planned_path"]
+    assert displayed.trajectory[0].joint_trajectory==simulator.last_trajectory
+    assert displayed.trajectory_start.joint_state.position==simulator.last_trajectory.points[0].positions
+    # The installed MoveIt RViz plugin uses volatile QoS, so test a viewer
+    # joining after execution with that exact durability too.
+    volatile=[]
+    late.create_subscription(DisplayTrajectory,"/move_group/display_planned_path",volatile.append,10)
+    until=time.monotonic()+3
+    while not volatile and time.monotonic()<until:time.sleep(.02)
+    assert volatile and volatile[-1].trajectory[0].joint_trajectory==simulator.last_trajectory
+    count=len(volatile)
+    time.sleep(.7)
+    assert len(volatile)==count, 'do not continuously restart RViz animation'
     executor.remove_node(late);late.destroy_node()
     executor.remove_node(visual.node);visual.close();selected.close()
-    print("ROS 模拟验证通过：邻近逆解与物理限位；控制器成功后残余速度不阻止下一动作；直线运动保持实际朝向和有效计时；5.62 rad 累计变化不被拦截；过快路径仅按驱动目标减速一次；无额外到位等待；RViz 数据支持后加入订阅者。")
+    print("ROS 模拟验证通过：邻近逆解与物理限位；控制器成功后残余速度不阻止下一动作；直线运动保持实际朝向和有效计时；5.62 rad 累计变化不被拦截；过快路径仅按驱动目标减速一次；无额外到位等待；RViz 显示实际下发轨迹，支持 Volatile 后加入订阅者且不持续重播；点云只含分割目标。")
 
 finally:
     motion.close()

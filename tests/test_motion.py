@@ -301,6 +301,27 @@ def test_late_accepted_goal_is_cancelled_after_send_timeout():
     assert calls == ["cancel"]
 
 
+def test_rviz_replacing_its_subscription_receives_the_latest_plan_once():
+    import threading
+    motion=PoseMotion.__new__(PoseMotion)
+    peers,sent=[(1,)],[]
+    motion.arm=NS(node=NS(get_subscriptions_info_by_topic=lambda topic:[NS(endpoint_gid=p) for p in peers]))
+    motion.display=NS(publish=sent.append)
+    motion._display_lock=threading.Lock()
+    motion._display_msg=object()
+    motion._display_peers={(1,)}
+    motion._refresh_display()
+    assert not sent
+    peers[:]=[(2,)]  # Same count, new endpoint after RViz loads its robot model.
+    motion._refresh_display()
+    assert sent==[motion._display_msg]
+    motion._refresh_display()
+    assert len(sent)==1
+    peers.clear()
+    motion._refresh_display()
+    assert len(sent)==1
+
+
 def test_result_timeout_cancels_goal_and_never_resends(monkeypatch):
     import sys
     monkeypatch.setitem(sys.modules, "control_msgs.action", NS(FollowJointTrajectory=NS(Goal=NS)))

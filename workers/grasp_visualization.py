@@ -59,9 +59,10 @@ class GraspVisualizer:
 
     def publish_scene(self, points, colors, grasps, frame):
         from sensor_msgs.msg import PointCloud2, PointField
-        # One point per four pixels is enough for RViz; inference stays unchanged.
-        points = np.asarray(points,dtype='<f4')[::4]
-        colors = np.clip(np.asarray(colors)[::4]*255,0,255).astype(np.uint32)
+        # Preserve small segmented objects; bound only large visualization clouds.
+        stride = max(1, (len(points)+29999)//30000)
+        points = np.asarray(points,dtype='<f4')[::stride]
+        colors = np.clip(np.asarray(colors)[::stride]*255,0,255).astype(np.uint32)
         packed = colors[:,0]<<16 | colors[:,1]<<8 | colors[:,2]
         data = np.empty((len(points),4),dtype='<f4'); data[:,:3] = points
         data[:,3] = packed.astype('<u4').view('<f4')

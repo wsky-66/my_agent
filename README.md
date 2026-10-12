@@ -105,7 +105,7 @@ Tab 开始录音，停顿后发送。无论文字还是语音输入，回复文�
 
 抓取兜底的位姿移动也使用上述邻近逆解和规划路径；后续下降、抬起和放置保持直线及当前实际朝向。详见 [抓取流程与 RViz](docs/grasping.md)。
 
-RViz 会收到原有 `/graspnet/pointcloud` 和 `/graspnet/grasps`，另用 `/graspnet/selected_grasp` 标记所选 pose 或兜底姿态。加载仓库中的 `configs/grasp.rviz` 即可同时查看机械臂、规划轨迹、点云和抓取框。
+RViz 的 `/graspnet/pointcloud` 只显示本次参与抓取推理的分割目标，保留 RGB 颜色；`/graspnet/grasps` 显示候选，`/graspnet/selected_grasp` 标记所选 pose 或兜底姿态。程序启动机械臂服务时自动加载仓库中的 `configs/grasp.rviz`，可查看深色工作台、半透明青色规划轨迹残影及末端轨迹线。动画采用实际下发轨迹的计时，以 1 倍速显示当前运动段；新轨迹立即替换旧段，也支持运动结束后再打开 RViz。
 
 ## 结构
 

@@ -32,7 +32,8 @@ def camera_diagnostic(log):
 
 robot = ManagedProcess("机械臂", ros_command([
     "ros2", "launch", "interbotix_xsarm_moveit_interface", "xsarm_moveit_interface.launch.py",
-    f"robot_model:={config.ROBOT_NAME}", "use_moveit_rviz:=true", "use_moveit_interface_gui:=false"], True),
+    f"robot_model:={config.ROBOT_NAME}", "use_moveit_rviz:=true", "use_moveit_interface_gui:=false",
+    f"rviz_config_file:={config.ROOT / 'configs/grasp.rviz'}"], True),
     Path(config.ROOT) / "logs/arm_launch.log",
     health.robot_status, preflight=health.serial_preflight, diagnose=arm_diagnostic)
 

@@ -29,12 +29,12 @@ Visualization Manager:
   Class: ''
   Displays:
   - Alpha: 0.5
-    Cell Size: 1
+    Cell Size: 0.1
     Class: rviz_default_plugins/Grid
-    Color: 255; 255; 255
+    Color: 74; 92; 112
     Enabled: true
     Line Style:
-      Line Width: 0.029999999329447746
+      Line Width: 0.001
       Value: Lines
     Name: Grid
     Normal Cell Count: 0
@@ -71,8 +71,8 @@ Visualization Manager:
         Z: 2
     Name: MotionPlanning
     Planned Path:
-      Color Enabled: false
-      Interrupt Display: false
+      Color Enabled: true
+      Interrupt Display: true
       Links:
         All Links Enabled: true
         Expand Joint Details: false
@@ -95,7 +95,7 @@ Visualization Manager:
         wx250s/ee_gripper_link:
           Alpha: 1
           Show Axes: false
-          Show Trail: false
+          Show Trail: true
         wx250s/fingers_link:
           Alpha: 1
           Show Axes: false
@@ -146,13 +146,13 @@ Visualization Manager:
           Show Trail: false
           Value: true
       Loop Animation: false
-      Robot Alpha: 0.5
-      Robot Color: 150; 50; 150
+      Robot Alpha: 0.25
+      Robot Color: 45; 210; 255
       Show Robot Collision: false
       Show Robot Visual: true
-      Show Trail: false
-      State Display Time: 3x
-      Trail Step Size: 1
+      Show Trail: true
+      State Display Time: 1x
+      Trail Step Size: 8
       Trajectory Topic: /move_group/display_planned_path
     Planning Metrics:
       Payload: 1
@@ -168,7 +168,7 @@ Visualization Manager:
       Interactive Marker Size: 0
       Joint Violation Color: 255; 0; 255
       Planning Group: interbotix_arm
-      Query Goal State: true
+      Query Goal State: false
       Query Start State: false
       Show Workspace: false
       Start State Alpha: 1
@@ -262,7 +262,7 @@ Visualization Manager:
     Value: true
     Velocity_Scaling_Factor: 0.1
   - Class: rviz_default_plugins/PointCloud2
-    Name: GraspNet Point Cloud
+    Name: Segmented Object Cloud
     Enabled: true
     Topic:
       Depth: 1
@@ -296,7 +296,7 @@ Visualization Manager:
       Value: /graspnet/selected_grasp
   Enabled: true
   Global Options:
-    Background Color: 0; 176; 240
+    Background Color: 18; 24; 36
     Fixed Frame: wx250s/base_link
     Frame Rate: 30
   Name: root
@@ -340,22 +340,22 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 1.469738483428955
+      Distance: 1.15
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0
+        X: 0.25
         Y: 0
-        Z: 0
+        Z: 0.15
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.3903985321521759
+      Pitch: 0.65
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
       Yaw: 1.4853975772857666

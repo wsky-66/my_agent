@@ -66,7 +66,8 @@ class GraspBackend:
             if self.visualizer is None:
                 self.visualizer = GraspVisualizer()
             candidates = [dict(g, label=item["label"]) for item in params["items"] for g in result[item["label"]]]
-            self.visualizer.publish_scene(self.pipeline.points, self.pipeline.colors, candidates, snapshot["base_frame"])
+            points, colors = self.pipeline.segmented_cloud(masks)
+            self.visualizer.publish_scene(points, colors, candidates, snapshot["base_frame"])
         except Exception as exc:
             from logger import error
             error("RViz 抓取结果发布失败", exc)

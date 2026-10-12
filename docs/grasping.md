@@ -19,6 +19,8 @@
 
 ## RViz
 
+程序启动机械臂服务时会自动加载这份配置。若复用了外部已启动的服务，可单独打开：
+
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/interbotix_ws/install/setup.bash
@@ -29,12 +31,16 @@ rviz2 -d /home/wsky/my_agent/configs/grasp.rviz
 
 | 话题 | 内容 |
 | --- | --- |
-| `/graspnet/pointcloud` | 本次 RGB-D 转换后的基座坐标系彩色点云 |
+| `/graspnet/pointcloud` | 本次参与抓取推理的分割掩膜并集，剔除无效深度后的基座坐标系彩色点云；不显示背景和桌面 |
 | `/graspnet/grasps` | 原版 GraspNet 返回的候选，绿色夹爪轮廓、进近箭头、标签与分数 |
 | `/graspnet/selected_grasp` | 金色所选 GraspNet pose；蓝色固定姿态兜底目标 |
-| `/move_group/display_planned_path` | MoveIt 返回的规划轨迹 |
+| `/move_group/display_planned_path` | 检查与计时处理后实际下发给控制器的关节轨迹，包含动画起点 |
 
-发布者随对应 worker 常驻，使用 Transient Local 保留最后一条消息；后打开 RViz 也能看到最近的结果。进近箭头沿 GraspNet 的局部 X 轴，夹爪轮廓使用与 GraspNet 展示一致的四块几何，避免把夹持内部画成实心碰撞盒。新场景替换候选 marker，新选择替换所选目标 marker；所选目标会保留到下次选择。退出 worker 后销毁发布者和节点。
+轨迹显示采用半透明青色机械臂、间隔采样的姿态残影和末端轨迹线，按实际轨迹计时以 1 倍速播放；当前机械臂保留原外观。新运动段立即替换上一段，轨迹滑条可以暂停、回放最近一段。背景使用深色，网格间距 10 cm，视角聚焦桌面工作区域。残影和回放是规划轨迹预览，不是额外运动命令，也不是实际运动测量；不额外等待硬件反馈。
+
+发布者随对应 worker 常驻，使用 Transient Local 保留最后一条消息。安装的 [MoveIt 轨迹插件](https://raw.githubusercontent.com/moveit/moveit2/2.5.9/moveit_ros/visualization/rviz_plugin_render_tools/src/trajectory_visualization.cpp)使用 Volatile 订阅，因此程序在发现新的轨迹订阅者时额外发送一次最近轨迹；后打开 RViz 也能显示，订阅者不变时不会持续重播。点云仅合并已有分割掩膜，重叠区域不重复；没有掩膜则发布空点云清除旧结果，已有掩膜但无抓取 pose 时仍显示目标点云。小目标保留全部点，大点云抽样限制在 3 万点以内；这个显示处理不改变原版 GraspNet 的推理和碰撞输入。
+
+进近箭头沿 GraspNet 的局部 X 轴，夹爪轮廓使用与 GraspNet 展示一致的四块几何，避免把夹持内部画成实心碰撞盒。新场景替换候选 marker，新选择替换所选目标 marker；所选目标会保留到下次选择。退出 worker 后销毁发布者、轨迹重发定时器和节点。
 
 ## 离线复现
 

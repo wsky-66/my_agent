@@ -1,6 +1,7 @@
 """ROS adapter for guarded pose moves, sharing the arm worker's spinning node."""
 import time
 import math
+import threading
 
 from core.health import ARM_JOINTS
 from core.motion import MotionPolicy, MotionRejected, driver_limits, move_pose, move_cartesian
@@ -24,18 +25,46 @@ class PoseMotion:
         from rclpy.qos import QoSProfile, DurabilityPolicy
         self.display = self.arm.node.create_publisher(DisplayTrajectory, "/move_group/display_planned_path",
             QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self._display_lock = threading.Lock()
+        self._display_msg, self._display_peers = None, set()
+        # MoveIt's RViz plugin subscribes with volatile QoS. Replay once when
+        # another viewer joins, without continuously restarting its animation.
+        self._display_timer = self.arm.node.create_timer(.5, self._refresh_display)
         self.goal = None
 
-    def _publish_plan(self, start, trajectory):
+    def _publish_plan(self, trajectory):
         if getattr(self, "display", None) is not None:
             try:
-                from moveit_msgs.msg import DisplayTrajectory
+                from moveit_msgs.msg import DisplayTrajectory, RobotTrajectory
                 msg = DisplayTrajectory()
-                msg.trajectory_start, msg.trajectory = start, [trajectory]
-                self.display.publish(msg)
+                msg.trajectory_start.is_diff = True
+                msg.trajectory_start.joint_state.name = list(trajectory.joint_names)
+                msg.trajectory_start.joint_state.position = list(trajectory.points[0].positions)
+                msg.trajectory = [RobotTrajectory(joint_trajectory=trajectory)]
+                with self._display_lock:
+                    self._display_msg = msg
+                    self._display_peers = self._display_subscribers()
+                    self.display.publish(msg)
             except Exception as exc:
                 from logger import error
                 error("RViz 规划轨迹发布失败", exc)
+
+    def _display_subscribers(self):
+        # Endpoint IDs also detect RViz replacing its subscription after model
+        # loading, even when the total subscriber count stays unchanged.
+        return {tuple(info.endpoint_gid) for info in self.arm.node.get_subscriptions_info_by_topic(
+            "/move_group/display_planned_path")}
+
+    def _refresh_display(self):
+        try:
+            with self._display_lock:
+                peers = self._display_subscribers()
+                if self._display_msg is not None and peers - self._display_peers:
+                    self.display.publish(self._display_msg)
+                self._display_peers = peers
+        except Exception as exc:
+            from logger import error
+            error("RViz 新订阅者轨迹发布失败", exc)
 
     def _wait(self, future, timeout):
         import rclpy
@@ -150,7 +179,6 @@ class PoseMotion:
         if response.error_code.val != 1:
             raise MotionRejected("MOTION_PLAN_FAILED", "完整路径规划失败，停止移动；请拆分位置或朝向变化",
                                  {"planning_error_code": int(response.error_code.val)})
-        self._publish_plan(request.motion_plan_request.start_state, response.trajectory)
         return response.trajectory.joint_trajectory
 
     def cartesian_plan(self, xyz, rpy, start, limits, policy):
@@ -179,7 +207,6 @@ class PoseMotion:
             raise MotionRejected("CARTESIAN_PATH_INCOMPLETE","进近/撤离的笛卡尔路径不完整，停止执行",
                                  {"cartesian_error_code": int(response.error_code.val),
                                   "fraction": float(response.fraction) if math.isfinite(response.fraction) else None})
-        self._publish_plan(request.start_state,response.solution)
         return response.solution.joint_trajectory
 
     @staticmethod
@@ -201,6 +228,8 @@ class PoseMotion:
         goal = FollowJointTrajectory.Goal()
         goal.trajectory = trajectory
         goal.goal_time_tolerance = Duration(sec=2)
+        # Show the validated, retimed path that is actually sent to the controller.
+        self._publish_plan(trajectory)
         future = self.action.send_goal_async(goal)
         try:
             self.goal = self._wait(future, 2)
@@ -238,4 +267,5 @@ class PoseMotion:
             self.goal.cancel_goal_async()
             self.goal = None
         self.action.destroy()
+        self.arm.node.destroy_timer(self._display_timer)
         self.arm.node.destroy_publisher(self.display)

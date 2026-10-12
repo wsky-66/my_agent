@@ -19,6 +19,15 @@ class GraspPipeline:
         self.points = cloud[self.valid] @ transform[:3,:3].T + transform[:3,3]
         self.colors = color[self.valid]/255.
 
+    def segmented_cloud(self, masks):
+        """Display only the union of masks, keeping inference's full scene intact."""
+        selected = np.zeros_like(self.valid, dtype=bool)
+        for mask in masks:
+            if mask is not None:
+                selected |= mask
+        selected = selected[self.valid]
+        return self.points[selected], self.colors[selected]
+
     def infer(self, mask, *, top, score_min, no_collision=False):
         import torch
         start = time.monotonic()

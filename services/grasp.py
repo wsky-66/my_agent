@@ -9,6 +9,7 @@ from services.runtime import worker
 
 client = worker("grasp", config.VISION_PYTHON, {"controller_dir": config.CONTROLLER_DIR,
                 "robot_name": config.ROBOT_NAME, "grasp_backend": config.GRASP_BACKEND,
+                "grasp_offset": [config.GRASP_OFFSET_X, 0., config.GRASP_OFFSET_Z],
                 "grcnn_root": config.GRCNN_ROOT, "grcnn_checkpoint": config.GRCNN_CHECKPOINT,
                 "grcnn_device": config.GRCNN_DEVICE}, ros=True, timeout=300,
                 env={"OPENBLAS_NUM_THREADS":"1","OMP_NUM_THREADS":"1"})

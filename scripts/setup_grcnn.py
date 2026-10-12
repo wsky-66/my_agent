@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import zipfile
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -14,29 +15,38 @@ CHECKPOINT = "trained-models/cornell-randsplit-rgbd-grconvnet3-drop1-ch32/epoch_
 CHECKPOINT_SHA256 = "e6c03afc0f8266d29ec92141088cc6a557215fabc2681d4ca5a162f451853d28"
 
 
+def runtime_source(relative):
+    """Keep inference code, its licence and the one deployed checkpoint."""
+    return (relative in {"LICENSE", "README.md", "inference/__init__.py", CHECKPOINT} or
+            relative.startswith("inference/models/") and relative.endswith(".py"))
+
+
 def main():
     folder = config.ROOT/".runtime/grcnn"
     folder.mkdir(parents=True,exist_ok=True)
-    archive,root = folder/"upstream.zip",folder/"upstream"
-    if not archive.is_file():
-        url = f"https://codeload.github.com/skumra/robotic-grasping/zip/{COMMIT}"
-        subprocess.run(["curl","--fail","--location","--silent","--show-error","--connect-timeout","10",
-                        "--max-time","180",url,"--output",str(archive)],check=True)
-    with zipfile.ZipFile(archive) as z:
-        if z.comment.decode()!=COMMIT:
-            raise ValueError("GR-CNN 压缩包版本不匹配，请移除 .runtime/grcnn/upstream.zip 后重试")
-        prefix = z.namelist()[0].split("/")[0]+"/"
-        for info in z.infolist():
-            relative = info.filename[len(prefix):]
-            destination = root/relative
-            if not destination.resolve().is_relative_to(root.resolve()):
-                raise ValueError("压缩包路径无效")
-            if info.is_dir():
-                destination.mkdir(parents=True,exist_ok=True)
-            elif relative:
-                destination.parent.mkdir(parents=True,exist_ok=True)
-                destination.write_bytes(z.read(info))
+    root = folder/"upstream"
     source = root/CHECKPOINT
+    required = (CHECKPOINT, "LICENSE", "inference/__init__.py", "inference/models/__init__.py",
+                "inference/models/grasp_model.py", "inference/models/grconvnet3.py")
+    if any(not (root/relative).is_file() for relative in required):
+        with tempfile.TemporaryDirectory(dir=folder) as temporary:
+            archive = Path(temporary)/"upstream.zip"
+            url = f"https://codeload.github.com/skumra/robotic-grasping/zip/{COMMIT}"
+            subprocess.run(["curl","--fail","--location","--silent","--show-error","--connect-timeout","10",
+                            "--max-time","180",url,"--output",str(archive)],check=True)
+            with zipfile.ZipFile(archive) as z:
+                if z.comment.decode()!=COMMIT:
+                    raise ValueError("GR-CNN 压缩包版本不匹配")
+                prefix = z.namelist()[0].split("/")[0]+"/"
+                for info in z.infolist():
+                    relative = info.filename[len(prefix):]
+                    if info.is_dir() or not runtime_source(relative):
+                        continue
+                    destination = root/relative
+                    if not destination.resolve().is_relative_to(root.resolve()):
+                        raise ValueError("压缩包路径无效")
+                    destination.parent.mkdir(parents=True,exist_ok=True)
+                    destination.write_bytes(z.read(info))
     if hashlib.sha256(source.read_bytes()).hexdigest()!=CHECKPOINT_SHA256:
         raise ValueError("作者的预训练权重校验失败")
     # Convert this verified official full-module pickle once. Production loads

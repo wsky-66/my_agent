@@ -28,7 +28,7 @@ class GraspBackend:
             raise ValueError("彩色与深度尺寸不一致")
         k = snapshot["intrinsics"]
         transform = np.asarray(snapshot["extrinsics"], dtype=float)
-        from core.grasp_geometry import rigid_transform
+        from core.grasp_geometry import offset_grasp, rigid_transform
         transform = rigid_transform(transform)
         if len(k)!=9 or not np.isfinite(k).all() or k[0]<=0 or k[4]<=0:
             raise ValueError("相机内参无效")
@@ -63,6 +63,7 @@ class GraspBackend:
             grasps, diagnostics = self.pipeline.infer(mask,
                 top=max(1, min(int(params.get("top", 3)), 50)), score_min=score_min,
                 no_collision=bool(params.get("no_collision", False)))
+            grasps = [offset_grasp(g, self.opts.get("grasp_offset", [0., 0., 0.])) for g in grasps]
             for g in grasps:
                 g.update(frame=snapshot["base_frame"], calibration_id=snapshot["calibration_id"],
                          snapshot_timestamp=snapshot["timestamp"], ee_frame=f"{self.opts['robot_name']}/ee_gripper_link")

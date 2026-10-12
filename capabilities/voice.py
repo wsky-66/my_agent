@@ -161,9 +161,6 @@ def capture_vad():
         os.unlink(path)
 
 
-capture_text = capture_vad
-
-
 def term_input(prompt="  你 › "):
     if not sys.stdin.isatty():
         return input(prompt).strip()

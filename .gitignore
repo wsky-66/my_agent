@@ -16,7 +16,6 @@ htmlcov/
 *.pt
 *.pth
 *.onnx
-!weights/.gitkeep
 
 # 日志
 logs/
@@ -25,5 +24,4 @@ logs/
 # 临时草稿 / 测试产物
 scratch/
 frames/
-test/vis_*.png
 vis_*.png

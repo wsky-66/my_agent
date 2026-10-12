@@ -39,6 +39,18 @@ def ee_position(position, rotation, depth, tip_from_ee):
     return np.asarray(position)+np.asarray(rotation)[:, 0]*(depth-tip_from_ee)
 
 
+def offset_grasp(grasp, offset):
+    """Translate a model result in base_link, keeping its jaw/EE geometry intact.
+
+    Apply once at the worker output boundary, after native model filtering.
+    A new dictionary leaves cached/raw predictions untouched on repeated scans.
+    """
+    return {**grasp,
+            "position": (np.asarray(grasp["position"])+offset).tolist(),
+            "ee_position": (np.asarray(grasp["ee_position"])+offset).tolist(),
+            "base_offset": list(offset)}
+
+
 def rotation_rpy(rotation):
     from scipy.spatial.transform import Rotation
     # Euler angles are non-unique at pitch=90 degrees, but represent the same

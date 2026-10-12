@@ -20,7 +20,7 @@ def _grasp(value, snapshot):
                           ("snapshot_timestamp",snapshot.get("timestamp"))):
         if key in value and value[key]!=expected:
             raise ValueError("抓取 pose 与当前场景不一致，请重新扫描")
-    position = _xyz(value.get("ee_position",value["position"]))
+    position = _xyz(value["ee_position"] if "ee_position" in value else value["position"])
     rotation = (np.asarray(value["rotation"],dtype=float) if "rotation" in value else
                 Rotation.from_euler("xyz",_xyz(value["rpy"]),degrees=True).as_matrix())
     t = np.eye(4); t[:3,:3] = rotation; rigid_transform(t)

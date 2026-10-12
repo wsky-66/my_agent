@@ -62,7 +62,9 @@ python3 main.py
 
 有抓取 pose 时取最高分候选，处理 roll 范围后用 MoveIt 求解；没有 pose 时默认恢复定位坐标加 `[0°,50°,0°]` 的原版兜底。`allow_fallback=false` 可明确禁用兜底。原版 GraspNet 模型碰撞、去重、分数和高度过滤继续使用，取消后加的多区域搜索、桌面拟合、STL 扫掠筛选和八候选预检。
 
-模型的接触参考位置按 depth 转换为末端目标，下降到该目标；兜底沿用定位高度下方 3 cm。两条路径均先张开到 0.037 m，再到参考高度上方 10 cm、直线下降、闭合到 0.024 m，抬到参考高度上方 8 cm。跨位置搬运采用 MoveIt 完整路径规划，终点朝向取当前实际朝向；放置进近和撤离高度为目标上方 10 cm，放置下降到上方 4 cm，松爪后等待 0.5 秒。动作序列完成不代表视觉确认夹持成功。流程与 RViz 配置见 [抓取流程](docs/grasping.md)。
+模型的接触参考位置按 depth 转换为末端目标。两个模型在统一输出处加一次基座坐标补偿：**x −1.5 cm、z −1.0 cm**，y 和朝向不变；RViz 候选和所选抓取框使用同样的补偿。可通过 `.env` 的 `GRASP_OFFSET_X=-0.015`、`GRASP_OFFSET_Z=-0.010` 调整，单位米；设为 0 可关闭。补偿不改变定位坐标、兜底抓取或放置目标。
+
+兜底沿用定位高度下方 3 cm。两条路径均先张开到 0.037 m，再到参考高度上方 10 cm、直线下降、闭合到 0.024 m，抬到参考高度上方 8 cm。跨位置搬运采用 MoveIt 完整路径规划，终点朝向取当前实际朝向；放置进近和撤离高度为目标上方 10 cm，放置下降到上方 4 cm，松爪后等待 0.5 秒。动作序列完成不代表视觉确认夹持成功。流程与 RViz 配置见 [抓取流程](docs/grasping.md)。
 
 可部署作者的 Cornell RGB-D GR-CNN 权重，使用现有 `VISION_PYTHON` 环境：
 
@@ -130,12 +132,20 @@ capabilities/           面向模型的薄工具接口，显式按配置注册
 workflows/              确定性的多步抓放流程
 services/               机械臂、RGB-D、视觉模型与场景缓存
 workers/                常驻子进程中的 ROS / SAM2 / GraspNet / GR-CNN / ASR 适配
+scripts/                部署、保存场景回放与独立诊断入口
 prompts/system.md       模型行为与工具使用约定
 tests/                  无硬件的回归测试
 docs/architecture.md    数据流、生命周期和性能变化
 ```
 
 模型决定任务意图；工作流负责动作顺序；服务负责连接与数据；worker 隔离各 Python / ROS / 模型环境。导入模块不会连接设备或加载模型。工具统一返回 `ok`、`message`、`data`、`error_code` 与 `elapsed`，状态判断不再依赖错误关键词。
+
+已移除未使用的旧设备包装层和重复 ASR 服务，能力工具直接调用服务。原来的 `test/infer.py` 合并为 `scripts/check_detection.py`，复用主程序的检测服务；`tests/` 统一存放自动测试。检测诊断会将指定图片发送到配置的 DDS 云服务：
+
+```bash
+python3 scripts/check_detection.py "apple.bowl" --image /path/to/image.png
+# 省略 --image 时捕获相机帧，预览默认保存到 scratch/detection.png。
+```
 
 扩展工具：
 

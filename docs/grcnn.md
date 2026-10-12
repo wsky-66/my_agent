@@ -11,6 +11,8 @@ GRASP_BACKEND=grcnn python3 main.py
 
 模型和作者源码保存在 `.runtime/grcnn/`，保留上游许可证，不加入 Git。现有 `VISION_PYTHON` 环境已包含推理依赖；其他机器可在该环境安装 `requirements-grcnn.txt`，并补齐现有 ROS 和碰撞检测依赖。首次转换仅加载已校验的作者权重，后续 worker 用 `weights_only=True` 读取张量。`source.json` 记录来源、校验值及 Python 路径。
 
+部署只提取推理源码、许可证和指定权重，下载压缩包用完即清理；已有完整源码与校验通过的权重可直接复用。训练脚本、其他模型权重和重复源码不属于运行依赖。
+
 在 `.env` 中设置 `GRASP_BACKEND=grcnn` 可作为本机默认；`GRASP_BACKEND=graspnet python3 main.py` 可临时切回原模型。`GRCNN_DEVICE=auto` 有 CUDA 就使用 GPU，否则使用 CPU；也可指定 `cpu` 或 `cuda`。源码和权重路径可用 `GRCNN_ROOT`、`GRCNN_CHECKPOINT` 覆盖。启动会显示后端名称，每次实际抓取会显示“使用 GR-CNN pose”或兜底。
 
 ## 预测与执行
@@ -22,6 +24,8 @@ GRASP_BACKEND=grcnn python3 main.py
 沿用作者的目标分数下限 0.2 和局部峰值去重；`GRASP_SCORE_MIN` 可进一步提高下限。候选宽度不能超过当前张爪配置的 0.074 m；复用原有点云碰撞及空抓检测，输入仍是完整有效场景。没有额外桌面拟合、STL 扫掠、八候选 MoveIt 预检或关节到位等待，也没有 GraspNet 的绝对 3 cm 高度门槛。诊断包含峰值数、开口/几何排除数、碰撞排除数和耗时。
 
 最终 pose 进入现有工作流：上方进近 → 直线下降 → 闭爪 → 提到参考高度上方 8 cm → 完整路径规划搬运到目标上方 10 cm → 直线下降到上方 4 cm → 松爪成功 → 等待 0.5 秒 → 直线上升到上方 10 cm。模型成功但零候选时沿用原兜底；加载或推理异常直接报错。IK 或执行失败不切换到兜底。
+
+GR-CNN 与 GraspNet 共用输出位置补偿，默认基座 x 减少 1.5 cm、z 降低 1 cm；接触点和末端目标一起平移，RViz 使用同一结果。配置与坐标含义见 [抓取流程](grasping.md)。
 
 ## 测试
 

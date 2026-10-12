@@ -1,7 +1,6 @@
 """Construct worker commands with explicit runtime paths and shell quoting."""
 import json
 import shlex
-import subprocess
 from config import config
 from core.runtime import JsonWorker
 
@@ -17,11 +16,3 @@ def worker(name, python, options=None, *, ros=False, workspace=False, timeout=90
     if env:
         args=["env",*[f"{key}={value}" for key,value in env.items()],*args]
     return JsonWorker(name, ros_command(args, workspace) if ros else args, timeout=timeout)
-
-
-def probe(args, workspace=False):
-    try:
-        return subprocess.run(ros_command(args, workspace), capture_output=True,
-                              timeout=3).returncode == 0
-    except (subprocess.TimeoutExpired, OSError):
-        return False

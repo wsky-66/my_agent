@@ -61,6 +61,8 @@ class Config:
         self.SCENE_MAX_AGE = float(os.getenv("SCENE_MAX_AGE", "300"))
         self.GRASP_SCORE_MIN = float(os.getenv("GRASP_SCORE_MIN", "0"))
         self.GRASP_BACKEND = os.getenv("GRASP_BACKEND", "graspnet").lower()
+        self.GRASP_OFFSET_X = float(os.getenv("GRASP_OFFSET_X", "-0.015"))
+        self.GRASP_OFFSET_Z = float(os.getenv("GRASP_OFFSET_Z", "-0.010"))
         self.GRCNN_ROOT = _path("GRCNN_ROOT", ROOT / ".runtime/grcnn/upstream")
         self.GRCNN_CHECKPOINT = _path("GRCNN_CHECKPOINT", ROOT / ".runtime/grcnn/model.pt")
         self.GRCNN_DEVICE = os.getenv("GRCNN_DEVICE", "auto").lower()
@@ -81,6 +83,8 @@ class Config:
             raise ValueError("GRASP_SCORE_MIN 必须在 0~1 之间。")
         if self.GRASP_BACKEND not in {"graspnet", "grcnn"}:
             raise ValueError("GRASP_BACKEND 必须为 graspnet 或 grcnn。")
+        if not all(math.isfinite(v) for v in (self.GRASP_OFFSET_X, self.GRASP_OFFSET_Z)):
+            raise ValueError("抓取位置补偿必须为有限数字，单位米。")
         if self.GRCNN_DEVICE not in {"auto", "cpu", "cuda"}:
             raise ValueError("GRCNN_DEVICE 必须为 auto、cpu 或 cuda。")
         if not math.isfinite(self.SLEEP_JOINT_TOLERANCE) or not 0 < self.SLEEP_JOINT_TOLERANCE <= .1:

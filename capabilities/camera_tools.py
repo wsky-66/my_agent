@@ -31,12 +31,3 @@ def recognize_camera(prompt: str = "请描述画面中的物体和大概位置�
     if not captured.ok:
         return captured
     return describe(captured.data["image_path"], prompt)
-
-
-def _grab_frame():
-    result = camera.capture()
-    return result.data["image_path"] if result.ok else None
-
-
-def _ask_vision(image_path, prompt):
-    return str(describe(image_path, prompt))

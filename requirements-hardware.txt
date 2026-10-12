@@ -1,0 +1,6 @@
+# Install in the CLI environment for RGB-D geometry and microphone VAD.
+# ROS workers also need these libraries in ROS_PYTHON (usually provided by apt).
+-r requirements.txt
+numpy>=1.23.0
+opencv-python>=4.5.0
+scipy>=1.8.0

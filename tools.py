@@ -1,198 +1,58 @@
-import inspect
-import os
+"""Model-facing built-in tools and compatibility exports for custom tools."""
+from pathlib import Path
 import subprocess
-from typing import Callable, Any, get_type_hints
-
+import time
 from config import config
-from logger import error as log_error, is_error
-
-_PYTHON_TYPE_TO_JSON = {
-    str: "string",
-    int: "integer",
-    float: "number",
-    bool: "boolean",
-    list: "array",
-    dict: "object",
-    type(None): "null",
-}
+from core.execution import is_cancelled
+from core.registry import ToolRegistry, registry
+from core.results import ToolResult
+from core.runtime import terminate
 
 
-def _python_type_to_json_schema(annotation) -> dict:
-    if annotation in _PYTHON_TYPE_TO_JSON:
-        return {"type": _PYTHON_TYPE_TO_JSON[annotation]}
-    origin = getattr(annotation, "__origin__", None)
-    if origin is list:
-        inner = getattr(annotation, "__args__", (str,))[0]
-        return {"type": "array", "items": _python_type_to_json_schema(inner)}
-    return {"type": "string"}
-
-
-class ToolRegistry:
-    def __init__(self):
-        self._tools: dict[str, Callable] = {}
-
-    def register(self, func: Callable = None, *, name: str = None, description: str = None):
-        """装饰器：注册一个 Python 函数为可调用工具。"""
-        if func is None:
-            return lambda f: self.register(f, name=name, description=description)
-
-        tool_name = name or func.__name__
-        self._tools[tool_name] = func
-        func._tool_name = tool_name
-        func._tool_description = description or func.__doc__ or ""
-        return func
-
-    def get_schemas(self) -> list[dict]:
-        """生成 OpenAI 兼容的 tool schemas。"""
-        schemas = []
-        for name, func in self._tools.items():
-            hints = get_type_hints(func)
-            sig = inspect.signature(func)
-            params = {}
-            required = []
-
-            for param_name, param in sig.parameters.items():
-                if param_name in ("self", "cls"):
-                    continue
-                param_type = hints.get(param_name, str)
-                param_schema = _python_type_to_json_schema(param_type)
-
-                param_doc = _parse_param_doc(func._tool_description, param_name) or \
-                            _parse_param_doc(func.__doc__ or "", param_name)
-
-                param_def = {
-                    "type": param_schema["type"],
-                    "description": param_doc,
-                }
-                if "items" in param_schema:
-                    param_def["items"] = param_schema["items"]
-
-                if param.default is inspect.Parameter.empty:
-                    required.append(param_name)
-
-                params[param_name] = param_def
-
-            schema = {
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "description": _parse_func_description(func._tool_description),
-                    "parameters": {
-                        "type": "object",
-                        "properties": params,
-                        "required": required,
-                    },
-                },
-            }
-            schemas.append(schema)
-
-        return schemas
-
-    def execute(self, name: str, arguments: dict) -> str:
-        """执行一个工具调用并返回结果。异常与报错均记入错误日志。"""
-        if name not in self._tools:
-            log_error(f"未找到工具 '{name}' (参数: {arguments})")
-            return f"错误：未找到工具 '{name}'"
-
-        func = self._tools[name]
-        try:
-            result = str(func(**arguments))
-        except Exception as e:
-            log_error(f"工具执行异常: {name} {arguments}", e)
-            return f"工具执行出错: {e}"
-        if is_error(result):
-            log_error(f"工具返回错误: {name} {arguments} -> {result[:300]}")
-        return result
-
-    def list_tools(self) -> list[str]:
-        return list(self._tools.keys())
-
-
-def _parse_func_description(doc: str) -> str:
-    """从 docstring 提取函数描述（第一行）。"""
-    if not doc:
-        return "No description"
-    return doc.strip().split("\n")[0].strip()
-
-
-def _parse_param_doc(doc: str, param_name: str) -> str:
-    """从 docstring 提取参数描述。"""
-    if not doc:
-        return ""
-    for line in doc.split("\n"):
-        line = line.strip()
-        if line.startswith(f":param {param_name}:"):
-            return line.split(":", 2)[-1].strip()
-        if line.startswith(f"{param_name}:"):
-            parts = line.split(":", 1)
-            if len(parts) > 1:
-                return parts[1].strip()
-    return ""
-
-
-registry = ToolRegistry()
-
-
-# ---- 内置 Shell 工具 ----
-
-@registry.register(name="run_shell", description="执行一条 Shell 命令并返回输出。可用于文件操作、系统信息查询、运行脚本等。")
-def run_shell(command: str) -> str:
-    """
-    执行一条 Shell 命令并返回输出。
-
-    :param command: 要执行的 Shell 命令
-    """
+@registry.register(description="用于用户明确要求的命令或项目维护，返回 stdout、stderr 和退出码。常规视觉、抓放、目标澄清不使用此工具，不能用它寻找旧场景或绕过工作流失败。")
+def run_shell(command: str) -> ToolResult:
+    if is_cancelled():
+        return ToolResult.failure("TASK_CANCELLED", "任务已中断")
+    proc = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, cwd=config.ROOT, start_new_session=True)
+    completed = False
+    deadline = time.monotonic()+config.SHELL_TIMEOUT
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=config.SHELL_TIMEOUT,
-            cwd="/home/wsky/my_agent",
-        )
-        output = result.stdout.strip()
-        if result.stderr.strip():
-            output += "\n[stderr]\n" + result.stderr.strip()
-        if not output:
-            output = f"(退出码: {result.returncode})"
-        return output[:4000]
-    except subprocess.TimeoutExpired:
-        return f"命令超时 ({config.SHELL_TIMEOUT}秒)"
-    except Exception as e:
-        return f"执行命令时出错: {e}"
+        while True:
+            if is_cancelled():
+                return ToolResult.failure("TASK_CANCELLED", "任务中断，Shell 进程组已停止")
+            remaining = deadline-time.monotonic()
+            if remaining <= 0:
+                return ToolResult.failure("SHELL_TIMEOUT", "命令执行超时，Shell 进程组已停止")
+            try:
+                stdout, stderr = proc.communicate(timeout=min(.1, remaining))
+                completed = True
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        if not completed:
+            terminate(proc)
+        proc.stdout.close()
+        proc.stderr.close()
+    data = {"stdout": stdout[-4000:], "stderr": stderr[-2000:], "returncode": proc.returncode}
+    return ToolResult.success("命令完成", data) if proc.returncode == 0 else ToolResult.failure("SHELL_FAILED", f"命令退出码 {proc.returncode}", data)
 
 
-# ---- 内置文件工具 ----
-
-@registry.register(name="read_file", description="读取指定文件的内容。用于查看代码、配置、日志等文件。")
-def read_file(path: str) -> str:
-    """
-    读取指定文件的内容。
-
-    :param path: 文件路径（绝对路径或相对于工作目录的路径）
-    """
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()[:8000]
-    except FileNotFoundError:
-        return f"文件不存在: {path}"
-    except Exception as e:
-        return f"读取文件出错: {e}"
+def _path(path):
+    value = Path(path).expanduser()
+    return value if value.is_absolute() else config.ROOT / value
 
 
-@registry.register(name="write_file", description="将内容写入指定文件。用于创建或覆盖文件。")
-def write_file(path: str, content: str) -> str:
-    """
-    将内容写入指定文件。
+@registry.register(description="读取文本文件，返回内容。相对路径以项目目录为基准。")
+def read_file(path: str) -> ToolResult:
+    value = _path(path)
+    return ToolResult.success("文件已读取", {"path": str(value), "content": value.read_text(encoding="utf-8")[:8000]})
 
-    :param path: 文件路径（绝对路径或相对于工作目录的路径）
-    :param content: 要写入的内容
-    """
-    try:
-        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-        return f"已写入 {len(content)} 字节到 {path}"
-    except Exception as e:
-        return f"写入文件出错: {e}"
+
+@registry.register(description="创建或覆盖文本文件。相对路径以项目目录为基准。")
+def write_file(path: str, content: str) -> ToolResult:
+    value = _path(path)
+    value.parent.mkdir(parents=True, exist_ok=True)
+    value.write_text(content, encoding="utf-8")
+    return ToolResult.success("文件已保存", {"path": str(value), "characters": len(content)})

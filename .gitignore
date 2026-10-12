@@ -2,7 +2,12 @@
 __pycache__/
 *.py[cod]
 .venv/
+.runtime/
 venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # 环境与密钥
 .env
@@ -11,7 +16,6 @@ venv/
 *.pt
 *.pth
 *.onnx
-!weights/.gitkeep
 
 # 日志
 logs/
@@ -20,5 +24,4 @@ logs/
 # 临时草稿 / 测试产物
 scratch/
 frames/
-test/vis_*.png
 vis_*.png

@@ -1,0 +1,149 @@
+import json
+import os
+import sys
+import time
+import threading
+from core.execution import ExecutionContext, current
+from core.runtime import JsonWorker
+from core.runtime import terminate
+from pathlib import Path
+import subprocess
+
+SCRIPT = r'''
+import json, os, sys, time
+print('READY',flush=True)
+for line in sys.stdin:
+    req=json.loads(line)
+    if req['action']=='slow': time.sleep(1)
+    print('RESULT:'+json.dumps({'id':req['id'],'result':{'ok':True,'message':'done','data':{'pid':os.getpid()}}}),flush=True)
+'''
+
+
+def test_worker_reuses_process_and_restarts_after_timeout():
+    worker = JsonWorker('test', [sys.executable,'-u','-c',SCRIPT], timeout=0.2)
+    try:
+        first=worker.request('fast')
+        second=worker.request('fast')
+        assert first.ok and second.ok and first.data['pid']==second.data['pid']
+        assert worker.request('slow').error_code == 'WORKER_TIMEOUT'
+        assert worker.proc is None
+        third=worker.request('fast')
+        assert third.ok and third.data['pid'] != first.data['pid']
+    finally:
+        worker.stop()
+    assert worker.proc is None
+
+
+def test_mismatched_response_is_rejected_and_worker_stopped():
+    script=SCRIPT.replace("'id':req['id']", "'id':'wrong'")
+    worker=JsonWorker('test',[sys.executable,'-u','-c',script])
+    try:
+        result=worker.request('fast')
+        assert not result.ok and worker.proc is None
+    finally:
+        worker.stop()
+
+
+def test_crashed_worker_does_not_report_success():
+    script="import sys; print('READY',flush=True); sys.stdin.readline(); sys.exit(2)"
+    worker=JsonWorker('test',[sys.executable,'-u','-c',script])
+    try:
+        assert not worker.request('fast').ok
+    finally:
+        worker.stop()
+
+
+def test_cancellation_terminates_worker_without_retry():
+    worker = JsonWorker('test', [sys.executable, '-u', '-c', SCRIPT], timeout=10)
+    context = ExecutionContext()
+    token = current.set(context)
+    timer = threading.Timer(.15, context.cancelled.set)
+    try:
+        timer.start()
+        result = worker.request('slow')
+        assert result.error_code == 'TASK_CANCELLED' and worker.proc is None
+        assert worker.request('fast').error_code == 'TASK_CANCELLED'
+    finally:
+        timer.join()
+        worker.stop()
+        current.reset(token)
+
+
+def test_invalid_worker_result_remains_a_structured_response():
+    script = """from core.results import ToolResult
+from workers.protocol import serve
+serve(lambda action, args: ToolResult.success('invalid', {'x': float('nan')}) if action == 'bad' else ToolResult.success('done'))
+"""
+    worker = JsonWorker('test', [sys.executable, '-u', '-c', script])
+    try:
+        assert worker.request('bad').error_code == 'INVALID_RESULT'
+        assert worker.request('good').ok
+    finally:
+        worker.stop()
+
+
+def test_termination_cleans_descendants_after_launch_leader_exits(tmp_path):
+    pidfile = tmp_path/'child.pid'
+    child = 'import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(60)'
+    script = f"import subprocess,sys,time; from pathlib import Path; p=subprocess.Popen([sys.executable,'-c',{child!r}]); Path({str(pidfile)!r}).write_text(str(p.pid)); time.sleep(.1)"
+    leader = subprocess.Popen([sys.executable, '-c', script], start_new_session=True)
+    leader.wait(timeout=3)
+    pid = int(pidfile.read_text())
+    try:
+        terminate(leader)
+        stat = Path(f'/proc/{pid}/stat')
+        for _ in range(30):
+            if not stat.exists() or stat.read_text().split()[2] == 'Z':
+                break
+            time.sleep(.01)
+        assert not stat.exists() or stat.read_text().split()[2] == 'Z'
+    finally:
+        terminate(leader)
+
+
+def test_normal_stop_runs_backend_close_hook_before_forcing_exit(tmp_path):
+    marker = tmp_path/'backend.closed'
+    script = f"""from pathlib import Path
+from core.results import ToolResult
+from workers.protocol import serve
+serve(lambda action, args: ToolResult.success('ready'), lambda: Path({str(marker)!r}).touch())
+"""
+    worker = JsonWorker('test', [sys.executable, '-u', '-c', script])
+    try:
+        assert worker.request('fast').ok
+        proc = worker.proc
+        worker.stop()
+        assert marker.exists() and proc.poll() is not None
+    finally:
+        worker.stop()
+
+
+def test_detached_child_holding_pipes_does_not_block_worker_stop(tmp_path):
+    from core.hardware_processes import HardwareSweep
+    child = 'import time; time.sleep(60)'
+    script = f"""import subprocess,sys
+from core.results import ToolResult
+from workers.protocol import serve
+p=subprocess.Popen([sys.executable,'-c',{child!r}],start_new_session=True)
+serve(lambda action,args: ToolResult.success('ready',{{'child':p.pid}}))
+"""
+    worker = JsonWorker('test', [sys.executable, '-u', '-c', script])
+    sweep = HardwareSweep('wx250s','/camera/camera',tmp_path,arm=False,camera=False)
+    captured = {}
+    try:
+        response = worker.request('fast')
+        assert response.ok
+        proc = worker.proc
+        captured = sweep.targets([proc.pid])
+        assert response.data['child'] in captured
+        started = time.monotonic()
+        worker.stop()
+        assert time.monotonic()-started < 4
+        assert sweep.clean(captured,grace=.1).ok
+        until = time.monotonic()+1
+        while not proc.stdout.closed and time.monotonic() < until:
+            time.sleep(.02)
+        assert proc.stdout.closed and proc.stderr.closed
+    finally:
+        worker.stop()
+        sweep.clean(captured,grace=.1)

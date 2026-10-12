@@ -1,2 +1,7 @@
-openai>=1.0.0
+openai>=1.30.0
 python-dotenv>=1.0.0
+requests[socks]>=2.28.0
+httpx[socks]>=0.27.0
+# Explicit for SDKs backed by either httpx or httpx2, and requests-based services.
+socksio>=1.0.0
+PySocks>=1.7.1

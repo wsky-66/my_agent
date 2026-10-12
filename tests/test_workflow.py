@@ -1,9 +1,11 @@
 import time
+import threading
 import pytest
 from core.execution import ExecutionContext, current
 from core.results import ToolResult
 from services.scene import ScenePlan, store
 from workflows.manipulation import execute
+from workflows import manipulation
 from services import arm
 
 
@@ -55,6 +57,81 @@ def test_multi_object_release_lift_precedes_next_approach(recorded):
     assert recorded[-1][0] == 'go_sleep'
     assert sum(name == 'go_sleep' for name, _ in recorded) == 1
     assert value.moved == {'apple', 'banana'}
+
+
+@pytest.mark.parametrize('actions,release_indices', [
+    ([{'object':'apple','target':'bowl'}], [7]),
+    ([{'object':'apple','target_position':[.3,.1,.05]}], [7]),
+    ([{'object':'apple','target':'bowl'}, {'object':'banana','target':'plate'}], [7,16]),
+    ([{'object':'apple'}], []),
+])
+def test_only_successful_place_release_waits_before_retreat(monkeypatch, actions, release_indices):
+    plan()
+    calls, waits = [], []
+    clock = [0.]
+    def call(name, **args):
+        calls.append((name, args, clock[0]))
+        return ToolResult.success('controller completed')
+    def sleep(seconds):
+        assert calls[-1][:2] == ('gripper_set', {'position':.037})
+        waits.append((len(calls)-1, seconds))
+        clock[0] += seconds
+    monkeypatch.setattr(arm, 'call', call)
+    monkeypatch.setattr(manipulation.time, 'sleep', sleep)
+    monkeypatch.setattr(manipulation.time, 'monotonic', lambda: clock[0])
+    result = execute(actions, 'scene', return_to_sleep=False)
+    assert result.ok
+    assert waits == [(index, .5) for index in release_indices]
+    for index in release_indices:
+        assert calls[index+1][0] == 'move_arm'
+        assert calls[index+1][2] - calls[index][2] == pytest.approx(.5)
+        assert calls[index+1][1]['z'] - calls[index-1][1]['z'] == pytest.approx(.16)
+        assert result.data['steps'][index]['elapsed'] == pytest.approx(.5)
+    assert clock[0] == pytest.approx(.5*len(release_indices))
+
+
+def test_failed_release_never_waits_or_retreats(monkeypatch):
+    value = plan()
+    calls = []
+    def call(name, **args):
+        calls.append((name, args))
+        return (ToolResult.failure('MOTION_FAILED', 'release failed') if len(calls)==8
+                else ToolResult.success('done'))
+    def sleep(seconds):
+        pytest.fail('failed release must not start a pause')
+    monkeypatch.setattr(arm, 'call', call)
+    monkeypatch.setattr(manipulation.time, 'sleep', sleep)
+    result = execute([{'object':'apple','target':'bowl'}], 'scene')
+    assert result.error_code == 'MOTION_FAILED' and result.data['failed_step'] == 8
+    assert calls[-1] == ('gripper_set', {'position':.037}) and len(calls)==8
+    assert value.invalid and not value.moved
+
+
+def test_cancel_during_release_wait_stops_retreat_and_next_object(monkeypatch):
+    value = plan()
+    entered, waits, calls = threading.Event(), [], []
+    class ReleaseCancellation(threading.Event):
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            entered.set()
+            return super().wait(timeout)
+    context = ExecutionContext(cancelled=ReleaseCancellation())
+    def cancel():
+        if entered.wait(1.):
+            context.cancelled.set()
+    canceller = threading.Thread(target=cancel, daemon=True)
+    monkeypatch.setattr(arm, 'call', lambda name, **args: calls.append((name,args)) or ToolResult.success('done'))
+    token = current.set(context)
+    canceller.start()
+    try:
+        result = execute([{'object':'apple','target':'bowl'}, {'object':'banana','target':'plate'}], 'scene')
+        assert result.error_code == 'TASK_CANCELLED' and result.data['failed_step'] == 8
+        assert waits == [.5]
+        assert len(calls)==8 and calls[-1] == ('gripper_set', {'position':.037})
+        assert value.invalid and not value.moved and result.data['completed'] == []
+    finally:
+        current.reset(token)
+        canceller.join(timeout=1.)
 
 
 def test_failed_descent_does_not_close_gripper(monkeypatch):

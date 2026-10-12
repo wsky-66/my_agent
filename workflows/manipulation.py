@@ -1,8 +1,9 @@
 """Validated pick/place workflow: one model request, checked sequential actions."""
 import math
+import time
 
 from config import config
-from core.execution import is_cancelled, report
+from core.execution import current, is_cancelled, report
 from core.results import ToolResult
 from services import arm, scene
 
@@ -68,11 +69,22 @@ def execute(actions, scene_id=None, return_to_sleep=True, allow_fallback=True):
     actions = _actions(actions)  # validate the entire request before any physical command
     completed, steps = [], []
 
-    def step(name, **args):
+    def step(name, pause=0., **args):
         if is_cancelled():
             return ToolResult.failure("TASK_CANCELLED", "任务已中断，停止后续步骤")
         report(name, args)
         result = arm.call(name, **args)
+        if result.ok and pause:
+            started, elapsed = time.monotonic(), result.elapsed
+            context = current.get()
+            if context is not None:
+                cancelled = context.cancelled.wait(pause)
+            else:
+                time.sleep(pause)
+                cancelled = is_cancelled()
+            if cancelled:
+                result = ToolResult.failure("TASK_CANCELLED", "松爪后等待已中断，停止后续步骤", result.data)
+            result.elapsed = round(elapsed + time.monotonic() - started, 4)
         steps.append({"name": name, "ok": result.ok, "elapsed": result.elapsed})
         report(name, args, result)
         return result
@@ -128,23 +140,24 @@ def execute(actions, scene_id=None, return_to_sleep=True, allow_fallback=True):
         strategies.append(strategy)
         report("grasp_strategy",strategy,ToolResult.success("使用 GraspNet pose" if debug["mode"]=="graspnet" else "无抓取 pose，使用原版定位坐标和固定姿态兜底"))
         sequence = [
-            ("gripper_set", {"position": 0.037}),
-            ("move_arm", dict(x=x, y=y, z=z+0.10, **orientation, grasp_debug=debug)),
-            ("move_arm", dict(x=x, y=y, z=grasp_z, cartesian=True)),
-            ("gripper_set", {"position": 0.024}),
-            ("move_arm", dict(x=x, y=y, z=z+0.15, cartesian=True)),
+            ("gripper_set", {"position": 0.037}, 0.),
+            ("move_arm", dict(x=x, y=y, z=z+0.10, **orientation, grasp_debug=debug), 0.),
+            ("move_arm", dict(x=x, y=y, z=grasp_z, cartesian=True), 0.),
+            ("gripper_set", {"position": 0.024}, 0.),
+            ("move_arm", dict(x=x, y=y, z=z+0.15, cartesian=True), 0.),
         ]
         if target is not None:
             tx, ty, tz = target
             sequence += [
-                ("move_arm", dict(x=tx, y=ty, z=tz+0.20, cartesian=True)),
-                ("move_arm", dict(x=tx, y=ty, z=tz+0.04, cartesian=True)),
-                ("gripper_set", {"position": 0.037}),
-                ("move_arm", dict(x=tx, y=ty, z=tz+0.20, cartesian=True)),
+                ("move_arm", dict(x=tx, y=ty, z=tz+0.20, cartesian=True), 0.),
+                ("move_arm", dict(x=tx, y=ty, z=tz+0.04, cartesian=True), 0.),
+                # Allow the fingers to finish releasing before retreating.
+                ("gripper_set", {"position": 0.037}, 0.5),
+                ("move_arm", dict(x=tx, y=ty, z=tz+0.20, cartesian=True), 0.),
             ]
-        for index, (name, args) in enumerate(sequence):
+        for index, (name, args, pause) in enumerate(sequence):
             try:
-                result = step(name, **args)
+                result = step(name, pause=pause, **args)
             except BaseException:
                 plan.invalid = True
                 raise

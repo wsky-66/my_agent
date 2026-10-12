@@ -158,9 +158,6 @@ def move_pose(backend, xyz, rpy, policy, audit=lambda event: None):
         audit({"stage": "ik_selected", **data})
         trajectory = backend.plan(start, target, limits, policy)
         data.update(prepare_trajectory(trajectory, start, target, limits, policy))
-        current = check_joints(backend.joints(), limits, feedback=True)
-        if max(abs(current[n]-start[n]) for n in ARM_JOINTS) > .03:
-            raise MotionRejected("MOTION_ROBOT_MOVED", "规划期间关节状态变化，停止发送轨迹")
         audit({"stage": "planned", **data})
         backend.execute(trajectory, data["duration"])
         data["controller_completed"] = True
@@ -201,9 +198,6 @@ def move_cartesian(backend, xyz, rpy, policy, audit=lambda event: None):
         # MoveIt already returns a timed Cartesian path. Only retime when its
         # speed exceeds the driver target; do not multiply all times again.
         data.update(prepare_trajectory(path,start,target,limits,policy))
-        current = check_joints(backend.joints(),limits,feedback=True)
-        if max(abs(current[n]-start[n]) for n in ARM_JOINTS)>.03:
-            raise MotionRejected("MOTION_ROBOT_MOVED", "笛卡尔规划期间关节变化，停止发送轨迹")
         audit({"stage":"planned",**data})
         backend.execute(path,data["duration"])
         data["controller_completed"] = True

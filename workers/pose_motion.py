@@ -73,11 +73,6 @@ class PoseMotion:
         positions = client.get_joints(timeout=min(1., max(.01, self.deadline-time.monotonic())))
         if not positions:
             raise MotionRejected("MOTION_NO_FEEDBACK", "没有近期完整关节反馈，停止移动")
-        sample = getattr(client, "_feedback", None)
-        if sample and sample[1].velocity:
-            velocities = dict(zip(sample[1].name, sample[1].velocity))
-            if any(n not in velocities or not math.isfinite(velocities[n]) or abs(velocities[n]) > .05 for n in ARM_JOINTS):
-                raise MotionRejected("MOTION_ROBOT_BUSY", "机械臂仍在运动，停止发送新的位姿轨迹")
         return positions
 
     def inverse_solutions(self, xyz, rpy, start, limits, policy):

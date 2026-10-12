@@ -33,14 +33,13 @@ class Backend:
         self.candidates = [joints(.8), self.target]
         self.events = []
         self.path = None
-        self.current = None
 
     def limits(self):
         return limits()
 
     def joints(self):
         self.events.append("joints")
-        return self.current if self.current is not None and "plan" in self.events else self.start
+        return self.start
 
     def inverse_solutions(self, *args):
         self.events.append("ik")
@@ -62,7 +61,7 @@ def test_pose_is_planned_before_controller_completion_is_reported():
     backend, events = Backend(), []
     result = move_pose(backend, [0.3, 0., .2], [0., 50., 0.], MotionPolicy(), events.append)
     assert result.ok
-    assert backend.events == ["joints", "ik", "plan", "joints", "execute"]
+    assert backend.events == ["joints", "ik", "plan", "execute"]
     assert result.data["target"] == backend.target
     assert [e["stage"] for e in events] == ["start", "ik_selected", "planned", "completed"]
 
@@ -168,11 +167,29 @@ def test_pose_execution_uses_the_slowed_trajectory_and_duration():
     assert validate_trajectory(sent[0][0], backend.start, backend.target, limits(), MotionPolicy())
 
 
-def test_robot_change_during_planning_aborts_dispatch():
+@pytest.mark.parametrize("move", [move_pose, move_cartesian])
+def test_motion_reads_one_start_sample_without_a_second_feedback_gate(move):
     backend = Backend()
-    backend.current = joints(.1)
-    result = move_pose(backend, [.3,0,.2], [0,50,0], MotionPolicy())
-    assert result.error_code == "MOTION_ROBOT_MOVED" and "execute" not in backend.events
+    backend.cartesian_plan = lambda *args: trajectory(backend.start,backend.target)
+    def read():
+        backend.events.append("joints")
+        assert backend.events.count("joints")==1, "do not wait for or compare another feedback sample"
+        return backend.start
+    backend.joints = read
+    result = move(backend, [.3,0,.2], [0,50,0], MotionPolicy())
+    assert result.ok and backend.events.count("execute")==1
+
+
+@pytest.mark.parametrize("velocities", [[.12]*6, [.12], []])
+def test_joint_position_read_does_not_use_velocity_as_a_busy_gate(velocities):
+    motion=PoseMotion.__new__(PoseMotion)
+    calls=[]
+    def read(timeout):
+        calls.append(timeout)
+        return joints(.2)
+    client=NS(get_joints=read,_feedback=(0,NS(name=list(ARM_JOINTS),velocity=velocities)))
+    motion.backend=NS(joint=lambda:client);motion.deadline=1e12
+    assert motion.joints()==joints(.2) and len(calls)==1
 
 
 def test_execution_failure_never_retries_or_claims_success():
@@ -347,7 +364,7 @@ def test_cartesian_path_keeps_valid_moveit_timing():
     result=move_cartesian(backend,[.3,0,.2],[0,90,0],MotionPolicy())
     assert result.ok and result.data['duration']==result.data['original_duration']==1
     assert result.data['time_scale']==1
-    assert backend.events==['joints','joints','execute']
+    assert backend.events==['joints','execute']
 
 
 def test_cartesian_overspeed_is_retimed_once_against_the_driver_target():

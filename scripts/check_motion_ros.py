@@ -29,6 +29,7 @@ class Simulator(Node):
     def __init__(self):
         super().__init__("pose_motion_simulator")
         self.positions = [0.]*6
+        self.reported_velocity = 0.
         self.pending = None
         self.scenario, self.iks, self.plans, self.goals = "normal", 0, 0, 0
         self.publisher = self.create_publisher(JointState, PREFIX+"/joint_states", qos_profile_sensor_data)
@@ -43,7 +44,7 @@ class Simulator(Node):
         if self.pending is not None and time.monotonic() >= self.pending[0]:
             self.positions, self.pending = self.pending[1], None
         msg = JointState()
-        msg.name, msg.position, msg.velocity = list(ARM_JOINTS), self.positions, [0.]*6
+        msg.name, msg.position, msg.velocity = list(ARM_JOINTS), self.positions, [self.reported_velocity]*6
         msg.header.stamp = self.get_clock().now().to_msg()
         self.publisher.publish(msg)
 
@@ -131,6 +132,7 @@ class Simulator(Node):
             self.pending = time.monotonic()+2.4, target
         else:
             self.positions = target
+        self.reported_velocity = .12
         handle.succeed()
         result = FollowJointTrajectory.Result()
         result.error_code = 0
@@ -182,20 +184,30 @@ try:
     first = motion.move([.3,0.,.2], [0.,50.,0.])
     assert first.ok and abs(first.data["target"]["wrist_rotate"]-.2) < 1e-6, first.to_json()
     assert simulator.goals == simulator.plans == 1 and simulator.iks == 3
+    # Let the subscriber receive residual velocity after controller success.
+    # Production motion must neither wait for it to settle nor reject it.
+    time.sleep(.05)
+    assert list(client._feedback[1].velocity)==[.12]*6
+    simulator.scenario = "straight"
+    before = time.monotonic()
+    continued = motion.move_cartesian([.3,0.,.1],None)
+    assert continued.ok and continued.data["controller_completed"] and simulator.goals==2, continued.to_json()
+    assert time.monotonic()-before<2., "unexpected residual-velocity stability wait"
+    assert simulator.reported_velocity==.12
     simulator.scenario, simulator.positions = "limit", [0.]*6
     time.sleep(.1)
     invalid = motion.move([.3,0.,.2], [0.,50.,0.])
     assert invalid.error_code == "IK_BRANCH_REJECTED", invalid.to_json()
-    assert simulator.goals == simulator.plans == 1
+    assert simulator.goals == 2 and simulator.plans == 1
     simulator.scenario = "fail"
     failed = motion.move([.3,0.,.2], [0.,50.,0.])
     assert failed.error_code == "MOTION_PLAN_FAILED", failed.to_json()
-    assert simulator.goals == 1
+    assert simulator.goals == 2
     simulator.scenario = "speed"
     slowed = motion.move([.3,0.,.2], [0.,50.,0.])
     assert slowed.ok and slowed.data["time_scale"] > 1, slowed.to_json()
     assert max(slowed.data["peak_speed_rad_s"].values()) <= 3.14*.25
-    assert simulator.goals == 2
+    assert simulator.goals == 3
     simulator.positions = [0.]*6
     time.sleep(.1)
     simulator.scenario = "lag"
@@ -204,19 +216,19 @@ try:
     assert lagged.ok and lagged.data["controller_completed"] is True, lagged.to_json()
     assert time.monotonic()-before < 2., "unexpected post-controller feedback wait"
     assert simulator.pending is not None and simulator.positions == [0.]*6
-    assert simulator.goals == 3
+    assert simulator.goals == 4
     simulator.pending = None
     simulator.positions = [0.]*6
     time.sleep(.1)
     simulator.scenario="straight"
     straight=motion.move_cartesian([.3,0.,.1],None)
-    assert straight.ok and straight.data["cartesian"] and simulator.goals==4, straight.to_json()
+    assert straight.ok and straight.data["cartesian"] and simulator.goals==5, straight.to_json()
     assert straight.data['duration']==straight.data['original_duration']==1.
     assert straight.data['time_scale']==1., 'valid MoveIt timing must not be slowed again'
     simulator.scenario="travel";simulator.positions=[0.,0.,0.,.109,0.,0.]
     time.sleep(.1)
     travelled=motion.move_cartesian([.348668,-.017547,.003533],None)
-    assert travelled.ok and simulator.goals==5, travelled.to_json()
+    assert travelled.ok and simulator.goals==6, travelled.to_json()
     assert abs(travelled.data['travel_rad']['forearm_roll']-5.622836129247646)<1e-9
     assert abs(travelled.data['delta_rad']['forearm_roll']-.4240422339166976)<1e-9
     assert travelled.data['original_duration']==2.2 and travelled.data['time_scale']>1.
@@ -252,7 +264,7 @@ try:
     assert received["/move_group/display_planned_path"].trajectory[0].joint_trajectory.points
     executor.remove_node(late);late.destroy_node()
     executor.remove_node(visual.node);visual.close();selected.close()
-    print("ROS 模拟验证通过：邻近逆解与物理限位；直线运动保持实际朝向和有效计时；5.62 rad 累计变化不被拦截；过快路径仅按驱动目标减速一次；无额外到位等待；RViz 数据支持后加入订阅者。")
+    print("ROS 模拟验证通过：邻近逆解与物理限位；控制器成功后残余速度不阻止下一动作；直线运动保持实际朝向和有效计时；5.62 rad 累计变化不被拦截；过快路径仅按驱动目标减速一次；无额外到位等待；RViz 数据支持后加入订阅者。")
 
 finally:
     motion.close()

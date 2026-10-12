@@ -42,13 +42,15 @@ def test_multi_object_release_lift_precedes_next_approach(recorded):
     assert result.ok
     assert len(recorded) == 19
     assert recorded[7] == ('gripper_set', {'position': 0.037})
-    assert recorded[8][0] == 'move_arm' and recorded[8][1]['z'] == pytest.approx(0.26)
+    assert recorded[8][0] == 'move_arm' and recorded[8][1]['z'] == pytest.approx(0.16)
     assert recorded[10][1]['pitch'] == pytest.approx(90)
-    approaches = [args for name,args in recorded if name=='move_arm' and not args.get('cartesian')]
+    approaches = [args for name,args in recorded if name=='move_arm' and not args.get('cartesian') and not args.get('planned')]
     assert len(approaches) == 2
     assert all(args['pitch']==pytest.approx(90) for args in approaches)
     assert all(not {'roll','pitch','yaw'}.intersection(args) for name,args in recorded
                if name=='move_arm' and args.get('cartesian'))
+    transfers=[args for name,args in recorded if name=='move_arm' and args.get('planned')]
+    assert len(transfers)==2 and all(not {'roll','pitch','yaw','cartesian'}.intersection(args) for args in transfers)
     assert recorded[2][1]['z']==pytest.approx(.065575)
     assert recorded[2][1]['cartesian'] is True
     assert recorded[0] == ('gripper_set', {'position':.037})
@@ -85,7 +87,7 @@ def test_only_successful_place_release_waits_before_retreat(monkeypatch, actions
     for index in release_indices:
         assert calls[index+1][0] == 'move_arm'
         assert calls[index+1][2] - calls[index][2] == pytest.approx(.5)
-        assert calls[index+1][1]['z'] - calls[index-1][1]['z'] == pytest.approx(.16)
+        assert calls[index+1][1]['z'] - calls[index-1][1]['z'] == pytest.approx(.06)
         assert result.data['steps'][index]['elapsed'] == pytest.approx(.5)
     assert clock[0] == pytest.approx(.5*len(release_indices))
 
@@ -217,7 +219,7 @@ def test_no_model_pose_uses_original_fallback_with_fixed_orientation(recorded):
     assert recorded[1][1]['z']==pytest.approx(.16)
     assert recorded[1][1]['grasp_debug']['mode']=='fallback'
     assert recorded[2][1]['z']==pytest.approx(.03)
-    assert recorded[4][1]['z']==pytest.approx(.21)
+    assert recorded[4][1]['z']==pytest.approx(.14)
     approach = recorded[1][1]
     assert [approach['roll'],approach['pitch'],approach['yaw']]==[0,50,0]
     assert all(not {'roll','pitch','yaw'}.intersection(args) for name,args in recorded

@@ -95,7 +95,7 @@ Visualization Manager:
         wx250s/ee_gripper_link:
           Alpha: 1
           Show Axes: false
-          Show Trail: true
+          Show Trail: false
         wx250s/fingers_link:
           Alpha: 1
           Show Axes: false
@@ -146,11 +146,11 @@ Visualization Manager:
           Show Trail: false
           Value: true
       Loop Animation: false
-      Robot Alpha: 0.25
+      Robot Alpha: 1
       Robot Color: 45; 210; 255
       Show Robot Collision: false
-      Show Robot Visual: true
-      Show Trail: true
+      Show Robot Visual: false
+      Show Trail: false
       State Display Time: 1x
       Trail Step Size: 8
       Trajectory Topic: /move_group/display_planned_path
@@ -276,6 +276,15 @@ Visualization Manager:
     Size (Pixels): 3
     Size (m): 0.003
     Decay Time: 0
+  - Class: rviz_default_plugins/MarkerArray
+    Name: End Effector Trajectory
+    Enabled: true
+    Topic:
+      Depth: 1
+      Durability Policy: Transient Local
+      History Policy: Keep Last
+      Reliability Policy: Reliable
+      Value: /my_agent/ee_trajectory
   - Class: rviz_default_plugins/MarkerArray
     Name: GraspNet Candidates
     Enabled: true

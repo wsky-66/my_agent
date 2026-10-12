@@ -39,6 +39,15 @@ class Simulator(Node):
         self.create_service(GetMotionPlan, "/plan_kinematic_path", self.plan)
         self.create_service(GetCartesianPath, "/compute_cartesian_path", self.cartesian)
         self.action = ActionServer(self, FollowJointTrajectory, PREFIX+"/arm_controller/follow_joint_trajectory", self.execute)
+        from ament_index_python.packages import get_package_share_directory
+        from rclpy.qos import QoSProfile,DurabilityPolicy
+        from std_msgs.msg import String
+        import xacro
+        model=Path(get_package_share_directory('interbotix_xsarm_descriptions'))/'urdf/wx250s.urdf.xacro'
+        xml=xacro.process_file(str(model),mappings={'robot_name':PREFIX[1:],'hardware_type':'actual'}).toxml()
+        self.description=self.create_publisher(String,PREFIX+'/robot_description',
+            QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.description.publish(String(data=xml))
 
     def publish(self):
         if self.pending is not None and time.monotonic() >= self.pending[0]:
@@ -254,11 +263,12 @@ try:
     late=Node("rviz_late_subscriber");executor.add_node(late);received={}
     qos=QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL)
     for topic,kind in [("/graspnet/pointcloud",PointCloud2),("/graspnet/grasps",MarkerArray),
-                       ("/graspnet/selected_grasp",MarkerArray),("/move_group/display_planned_path",DisplayTrajectory)]:
+                       ("/graspnet/selected_grasp",MarkerArray),("/move_group/display_planned_path",DisplayTrajectory),
+                       ("/my_agent/ee_trajectory",MarkerArray)]:
         late.create_subscription(kind,topic,lambda msg,topic=topic:received.update({topic:msg}),qos)
     until=time.monotonic()+4
-    while len(received)<4 and time.monotonic()<until:time.sleep(.02)
-    assert len(received)==4, list(received)
+    while len(received)<5 and time.monotonic()<until:time.sleep(.02)
+    assert len(received)==5, list(received)
     pc=received["/graspnet/pointcloud"]
     assert pc.header.frame_id=="base" and pc.width==4 and len(pc.data)==64
     assert np.all(np.frombuffer(pc.data,dtype='<u4').reshape(-1,4)[:,3]==0xff0000)
@@ -272,6 +282,19 @@ try:
     displayed=received["/move_group/display_planned_path"]
     assert displayed.trajectory[0].joint_trajectory==simulator.last_trajectory
     assert displayed.trajectory_start.joint_state.position==simulator.last_trajectory.points[0].positions
+    ee=received['/my_agent/ee_trajectory'].markers
+    dots=next(m for m in ee if m.ns=='ee_samples')
+    line=next(m for m in ee if m.ns=='ee_path')
+    assert dots.type==dots.POINTS and line.type==line.LINE_STRIP
+    assert len(dots.points)>len(simulator.last_trajectory.points) and dots.points==line.points
+    assert dots.header.frame_id==PREFIX[1:]+'/base_link' and all(c.a==1. for c in dots.colors)
+    # Independently verify URDF-derived trace endpoints against the official
+    # Interbotix screw-axis model (not a straight line between requested XYZ).
+    import modern_robotics as mr
+    from interbotix_xs_modules.xs_robot.mr_descriptions import wx250s
+    for dot,point in [(dots.points[0],simulator.last_trajectory.points[0]),(dots.points[-1],simulator.last_trajectory.points[-1])]:
+        expected=mr.FKinSpace(wx250s.M,wx250s.Slist,np.array(point.positions))[:3,3]
+        assert np.allclose([dot.x,dot.y,dot.z],expected,atol=1e-10)
     # The installed MoveIt RViz plugin uses volatile QoS, so test a viewer
     # joining after execution with that exact durability too.
     volatile=[]
@@ -284,7 +307,7 @@ try:
     assert len(volatile)==count, 'do not continuously restart RViz animation'
     executor.remove_node(late);late.destroy_node()
     executor.remove_node(visual.node);visual.close();selected.close()
-    print("ROS 模拟验证通过：邻近逆解与物理限位；控制器成功后残余速度不阻止下一动作；直线运动保持实际朝向和有效计时；5.62 rad 累计变化不被拦截；过快路径仅按驱动目标减速一次；无额外到位等待；RViz 显示实际下发轨迹，支持 Volatile 后加入订阅者且不持续重播；点云只含分割目标。")
+    print("ROS 模拟验证通过：运动与控制器结果；直线朝向和计时；RViz 连续末端轨迹点与官方正解一致，支持后加入订阅者；点云只含分割目标。")
 
 finally:
     motion.close()

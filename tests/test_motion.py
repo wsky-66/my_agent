@@ -301,6 +301,30 @@ def test_late_accepted_goal_is_cancelled_after_send_timeout():
     assert calls == ["cancel"]
 
 
+def test_planned_transport_keeps_current_orientation_and_uses_normal_planner(monkeypatch):
+    import numpy as np
+    from scipy.spatial.transform import Rotation
+    import workers.pose_motion as module
+    motion=PoseMotion.__new__(PoseMotion);motion.policy=MotionPolicy();sent=[]
+    current=Rotation.from_euler('xyz',[13.,84.,-20.],degrees=True)
+    q=current.as_quat()
+    motion.arm=NS(get_current_ee_pose=lambda:NS(orientation=NS(x=q[0],y=q[1],z=q[2],w=q[3])))
+    def move(backend,xyz,rpy,policy,**kwargs):
+        sent.append((xyz,Rotation.from_euler('xyz',rpy,degrees=True).as_matrix()))
+        return ToolResult.success('planned')
+    monkeypatch.setattr(module,'move_pose',move)
+    assert motion.move([.3,.2,.2],None).ok
+    assert sent[0][0]==[.3,.2,.2] and np.allclose(sent[0][1],current.as_matrix())
+
+
+def test_arm_worker_routes_planned_transport_through_pose_motion(monkeypatch):
+    backend=ArmBackend(dict(controller_dir='/tmp',robot_name='test'));sent=[]
+    monkeypatch.setattr(backend,'ik_move',lambda xyz,rpy,cartesian=False:sent.append((xyz,rpy,cartesian)) or ToolResult.success('done'))
+    monkeypatch.setattr(backend,'arm',lambda:pytest.fail('transport must not use legacy Cartesian path'))
+    assert backend('move_arm',dict(x=.3,y=.2,z=.2,planned=True)).ok
+    assert sent==[([.3,.2,.2],None,False)]
+
+
 def test_rviz_replacing_its_subscription_receives_the_latest_plan_once():
     import threading
     motion=PoseMotion.__new__(PoseMotion)
@@ -511,6 +535,14 @@ for desired in (None,[0.,50.,0.]):
     motion._service=service
     assert motion.cartesian_plan([.3,0,.2],desired,{n:0. for n in ARM_JOINTS},None,None)=='path'
 print('Cartesian requests preserve actual orientation or explicit RPY')
+from core.motion import MotionRejected
+motion._service=lambda *args:NS(error_code=NS(val=1),fraction=68/99)
+try:
+    motion.cartesian_plan([.3,0,.2],None,{n:0. for n in ARM_JOINTS},None,None)
+    raise AssertionError('partial path must not be returned for execution')
+except MotionRejected as exc:
+    assert exc.code=='CARTESIAN_PATH_INCOMPLETE' and exc.data['planning_only'] and not exc.data['executed']
+    assert '68.7%' in str(exc) and '未下发' in str(exc)
 '''
     result=subprocess.run(['bash','-c','source /opt/ros/humble/setup.bash && exec /usr/bin/python3 -'],
                           input=script,text=True,capture_output=True,timeout=15,

@@ -147,16 +147,16 @@ def execute(actions, scene_id=None, return_to_sleep=True, allow_fallback=True):
             ("move_arm", dict(x=x, y=y, z=z+0.10, **orientation, grasp_debug=debug), 0.),
             ("move_arm", dict(x=x, y=y, z=grasp_z, cartesian=True), 0.),
             ("gripper_set", {"position": 0.024}, 0.),
-            ("move_arm", dict(x=x, y=y, z=z+0.15, cartesian=True), 0.),
+            ("move_arm", dict(x=x, y=y, z=z+0.08, cartesian=True), 0.),
         ]
         if target is not None:
             tx, ty, tz = target
             sequence += [
-                ("move_arm", dict(x=tx, y=ty, z=tz+0.20, cartesian=True), 0.),
+                ("move_arm", dict(x=tx, y=ty, z=tz+0.10, planned=True), 0.),
                 ("move_arm", dict(x=tx, y=ty, z=tz+0.04, cartesian=True), 0.),
                 # Allow the fingers to finish releasing before retreating.
                 ("gripper_set", {"position": 0.037}, 0.5),
-                ("move_arm", dict(x=tx, y=ty, z=tz+0.20, cartesian=True), 0.),
+                ("move_arm", dict(x=tx, y=ty, z=tz+0.10, cartesian=True), 0.),
             ]
         for index, (name, args, pause) in enumerate(sequence):
             try:

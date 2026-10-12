@@ -30,9 +30,17 @@ class PoseMotion:
         # MoveIt's RViz plugin subscribes with volatile QoS. Replay once when
         # another viewer joins, without continuously restarting its animation.
         self._display_timer = self.arm.node.create_timer(.5, self._refresh_display)
+        from workers.ee_trace import EndEffectorTrace
+        self.ee_trace = EndEffectorTrace(self.arm.node,backend.opts['robot_name'],self.arm.parent_frame,self.arm.ee_frame)
         self.goal = None
 
     def _publish_plan(self, trajectory):
+        if getattr(self,"ee_trace",None) is not None:
+            try:
+                self.ee_trace.publish(trajectory)
+            except Exception as exc:
+                from logger import error
+                error("RViz 末端轨迹发布失败",exc)
         if getattr(self, "display", None) is not None:
             try:
                 from moveit_msgs.msg import DisplayTrajectory, RobotTrajectory
@@ -204,9 +212,12 @@ class PoseMotion:
         request.max_step,request.jump_threshold,request.avoid_collisions = .003,0.,True
         response = self._service(self.cartesian,request,6)
         if response.error_code.val!=1 or not math.isfinite(response.fraction) or response.fraction<.999:
-            raise MotionRejected("CARTESIAN_PATH_INCOMPLETE","进近/撤离的笛卡尔路径不完整，停止执行",
+            message = (f"直线路径仅规划到 {response.fraction:.1%}，未下发该段运动" if math.isfinite(response.fraction)
+                       else "直线路径规划结果无效，未下发该段运动")
+            raise MotionRejected("CARTESIAN_PATH_INCOMPLETE",message,
                                  {"cartesian_error_code": int(response.error_code.val),
-                                  "fraction": float(response.fraction) if math.isfinite(response.fraction) else None})
+                                  "fraction": float(response.fraction) if math.isfinite(response.fraction) else None,
+                                  "planning_only": True, "executed": False})
         return response.solution.joint_trajectory
 
     @staticmethod
@@ -255,6 +266,15 @@ class PoseMotion:
     def move(self, xyz, rpy):
         from logger import record_motion
         self.deadline = time.monotonic()+self.policy.timeout
+        if rpy is None:
+            from scipy.spatial.transform import Rotation
+            from core.grasp_geometry import rotation_rpy
+            pose = self.arm.get_current_ee_pose()
+            if pose is None:
+                from core.results import ToolResult
+                return ToolResult.failure("POSE_UNAVAILABLE", "无法读取搬运终点所需的当前末端朝向")
+            q = pose.orientation
+            rpy = rotation_rpy(Rotation.from_quat([q.x,q.y,q.z,q.w]).as_matrix())
         return move_pose(self, xyz, rpy, self.policy, audit=record_motion)
 
     def move_cartesian(self, xyz, rpy):
@@ -267,5 +287,6 @@ class PoseMotion:
             self.goal.cancel_goal_async()
             self.goal = None
         self.action.destroy()
+        self.ee_trace.close()
         self.arm.node.destroy_timer(self._display_timer)
         self.arm.node.destroy_publisher(self.display)

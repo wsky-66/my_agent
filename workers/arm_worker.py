@@ -116,8 +116,8 @@ class ArmBackend:
                     return motion
                 return ToolResult.success(motion.message, {"motion": motion.data})
             else:
-                if args.get("cartesian"):
-                    motion = self.ik_move(xyz, None, cartesian=True)
+                if args.get("cartesian") or args.get("planned"):
+                    motion = self.ik_move(xyz, None, cartesian=bool(args.get("cartesian")))
                     if not motion.ok:
                         return motion
                     return ToolResult.success(motion.message, {"motion": motion.data})

@@ -211,7 +211,10 @@ class PoseMotion:
         request.waypoints = [pose]
         request.max_step,request.jump_threshold,request.avoid_collisions = .003,0.,True
         response = self._service(self.cartesian,request,6)
-        if response.error_code.val!=1 or not math.isfinite(response.fraction) or response.fraction<.999:
+        self.cartesian_fraction = float(response.fraction)
+        minimum = .95 if getattr(self, "allow_partial_cartesian", False) else .999
+        if (response.error_code.val!=1 or not math.isfinite(response.fraction) or
+                response.fraction<minimum or response.fraction>1.):
             message = (f"直线路径仅规划到 {response.fraction:.1%}，未下发该段运动" if math.isfinite(response.fraction)
                        else "直线路径规划结果无效，未下发该段运动")
             raise MotionRejected("CARTESIAN_PATH_INCOMPLETE",message,
@@ -277,9 +280,10 @@ class PoseMotion:
             rpy = rotation_rpy(Rotation.from_quat([q.x,q.y,q.z,q.w]).as_matrix())
         return move_pose(self, xyz, rpy, self.policy, audit=record_motion)
 
-    def move_cartesian(self, xyz, rpy):
+    def move_cartesian(self, xyz, rpy, allow_partial=False):
         from logger import record_motion
         self.deadline = time.monotonic()+self.policy.timeout
+        self.allow_partial_cartesian = allow_partial
         return move_cartesian(self,xyz,rpy,self.policy,audit=record_motion)
 
     def close(self):

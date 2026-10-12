@@ -77,7 +77,7 @@ class Simulator(Node):
         return response
 
     def cartesian(self, request, response):
-        assert self.scenario in ("straight", "travel")
+        assert self.scenario in ("straight", "travel", "partial")
         assert request.avoid_collisions and request.start_state.is_diff
         assert not request.path_constraints.joint_constraints
         # A straight move without RPY keeps the measured orientation, including
@@ -90,7 +90,7 @@ class Simulator(Node):
         values=[start[n] for n in ARM_JOINTS]
         end=list(values);end[-1]+=.05
         response.error_code.val=1
-        response.fraction=1.
+        response.fraction=.96 if self.scenario=="partial" else 1.
         response.solution.joint_trajectory.joint_names=list(ARM_JOINTS)
         path=[(values,0),(end,1)]
         if self.scenario == "travel":
@@ -307,7 +307,17 @@ try:
     assert len(volatile)==count, 'do not continuously restart RViz animation'
     executor.remove_node(late);late.destroy_node()
     executor.remove_node(visual.node);visual.close();selected.close()
-    print("ROS 模拟验证通过：运动与控制器结果；直线朝向和计时；RViz 连续末端轨迹点与官方正解一致，支持后加入订阅者；点云只含分割目标。")
+    simulator.scenario="partial"
+    before=simulator.goals
+    for allow in (False,True,False):
+        result=motion.move_cartesian([.3,0,.2],None,allow_partial=allow)
+        if allow:
+            assert result.ok and result.data['fraction']==.96 and not result.data['path_complete'], result.to_json()
+            assert simulator.goals==before+1 and result.data['controller_completed']
+        else:
+            assert result.error_code=='CARTESIAN_PATH_INCOMPLETE' and not result.data['executed'], result.to_json()
+    assert simulator.goals==before+1, 'only the permitted partial ascent reaches the controller'
+    print("ROS 模拟验证通过：运动与控制器结果；近完整上升执行、下降仍停止；RViz 连续末端轨迹点与官方正解一致，支持后加入订阅者；点云只含分割目标。")
 
 finally:
     motion.close()

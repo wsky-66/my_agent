@@ -412,6 +412,28 @@ def test_cartesian_path_keeps_valid_moveit_timing():
     assert backend.events==['joints','execute']
 
 
+def test_partial_ascent_is_reported_as_partial_without_an_extra_feedback_gate():
+    backend = Backend()
+    backend.cartesian_fraction = .96
+    backend.cartesian_plan = lambda *args: trajectory(backend.start, backend.target)
+    result = move_cartesian(backend, [.3, 0, .2], None, MotionPolicy())
+    assert result.ok and result.data['controller_completed']
+    assert not result.data['path_complete'] and result.data['fraction']==.96
+    assert '96.0%' in result.message and '完整' not in result.message
+    assert backend.events==['joints','execute']
+
+
+def test_partial_ascent_setting_does_not_leak_into_the_next_descent(monkeypatch):
+    import workers.pose_motion as module
+    motion = PoseMotion.__new__(PoseMotion)
+    motion.policy = MotionPolicy()
+    seen = []
+    monkeypatch.setattr(module, 'move_cartesian', lambda backend,*args,**kw: seen.append(backend.allow_partial_cartesian))
+    motion.move_cartesian([.3,0,.2], None, allow_partial=True)
+    motion.move_cartesian([.3,0,.1], None)
+    assert seen==[True,False]
+
+
 def test_cartesian_overspeed_is_retimed_once_against_the_driver_target():
     backend=Backend()
     path=trajectory(backend.start,joints(.1),backend.target,times=[0,.1,.2])
@@ -543,6 +565,18 @@ try:
 except MotionRejected as exc:
     assert exc.code=='CARTESIAN_PATH_INCOMPLETE' and exc.data['planning_only'] and not exc.data['executed']
     assert '68.7%' in str(exc) and '未下发' in str(exc)
+for allow_partial,fraction,error,accepted in [(False,.96,1,False),(True,.96,1,True),
+                                            (True,.95,1,True),(True,.94,1,False),
+                                            (True,.96,-31,False),(True,float('nan'),1,False),
+                                            (True,1.01,1,False)]:
+    motion.allow_partial_cartesian=allow_partial
+    motion._service=lambda *args:NS(error_code=NS(val=error),fraction=fraction,solution=NS(joint_trajectory='path'))
+    try:
+        assert motion.cartesian_plan([.3,0,.2],None,{n:0. for n in ARM_JOINTS},None,None)=='path'
+        assert accepted
+    except MotionRejected:
+        assert not accepted
+print('Near-complete ascent may proceed; descent and invalid plans remain rejected')
 '''
     result=subprocess.run(['bash','-c','source /opt/ros/humble/setup.bash && exec /usr/bin/python3 -'],
                           input=script,text=True,capture_output=True,timeout=15,

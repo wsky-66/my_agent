@@ -54,6 +54,11 @@ def test_multi_object_release_lift_precedes_next_approach(recorded):
     assert recorded[2][1]['z']==pytest.approx(.065575)
     assert recorded[2][1]['cartesian'] is True
     assert recorded[0] == ('gripper_set', {'position':.037})
+    assert recorded[3] == ('gripper_set', {'position':.015})
+    assert recorded[12] == ('gripper_set', {'position':.015})
+    assert [i for i,(name,args) in enumerate(recorded) if args.get('allow_partial')] == [4,8,13,17]
+    assert not recorded[2][1].get('allow_partial') and not recorded[6][1].get('allow_partial')
+    assert result.data['strategies'][0]['tip_position']==pytest.approx([.2,.05,.05])
     assert not any(name=='inspect_grasps' for name,args in recorded)
     assert all(v['mode']=='graspnet' for v in result.data['strategies'])
     assert result.data['execution_completed'] and not result.data['grasp_verified'] and not result.data['placement_verified']
@@ -147,7 +152,7 @@ def test_failed_descent_does_not_close_gripper(monkeypatch):
     result = execute([{'object':'apple','target':'bowl'}], 'scene')
     assert not result.ok and result.error_code == 'COLLISION'
     assert len(calls) == 3 and value.invalid
-    assert not any(args.get('position') == 0.024 for _, args in calls)
+    assert not any(args.get('position') == 0.015 for _, args in calls)
 
 
 def test_controller_failure_details_are_preserved_and_stop_followup_actions(monkeypatch):
@@ -217,6 +222,7 @@ def test_no_model_pose_uses_original_fallback_with_fixed_orientation(recorded):
     result=execute([{'object':'apple'}],'scene',return_to_sleep=False)
     assert result.ok and result.data['strategies'][0]['mode']=='fallback'
     assert len(recorded)==5
+    assert recorded[3] == ('gripper_set', {'position':.015})
     assert recorded[1][1]['z']==pytest.approx(.16)
     assert recorded[1][1]['grasp_debug']['mode']=='fallback'
     assert recorded[2][1]['z']==pytest.approx(.03)

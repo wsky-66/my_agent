@@ -77,12 +77,13 @@ class ArmBackend:
         return ToolResult.success("已读取末端位姿", {"position": [p.x, p.y, p.z], "rpy": rpy,
                                                      "frame": self.arm().parent_frame})
 
-    def ik_move(self, xyz, rpy, cartesian=False):
+    def ik_move(self, xyz, rpy, cartesian=False, allow_partial=False):
         """Choose a nearby bounded IK branch, then plan and validate a full path."""
         if not hasattr(self, "_pose_motion"):
             from workers.pose_motion import PoseMotion
             self._pose_motion = PoseMotion(self)
-        return (self._pose_motion.move_cartesian(xyz,rpy) if cartesian else self._pose_motion.move(xyz, rpy))
+        return (self._pose_motion.move_cartesian(xyz,rpy,allow_partial=allow_partial)
+                if cartesian else self._pose_motion.move(xyz, rpy))
 
     def __call__(self, action, args):
         if action == "get_arm_pose":
@@ -117,7 +118,8 @@ class ArmBackend:
                 return ToolResult.success(motion.message, {"motion": motion.data})
             else:
                 if args.get("cartesian") or args.get("planned"):
-                    motion = self.ik_move(xyz, None, cartesian=bool(args.get("cartesian")))
+                    options = {"allow_partial": True} if args.get("cartesian") and args.get("allow_partial") else {}
+                    motion = self.ik_move(xyz, None, cartesian=bool(args.get("cartesian")), **options)
                     if not motion.ok:
                         return motion
                     return ToolResult.success(motion.message, {"motion": motion.data})

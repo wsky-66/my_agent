@@ -8,6 +8,8 @@ import warnings
 
 import numpy as np
 
+STOCK_TIP_FROM_EE = .015575
+
 
 def rigid_transform(value):
     t = np.asarray(value, dtype=float)

@@ -191,6 +191,8 @@ def move_cartesian(backend, xyz, rpy, policy, audit=lambda event: None):
         start = check_joints(backend.joints(), limits, feedback=True)
         data.update(start=start,limits=limits)
         path = backend.cartesian_plan(xyz, rpy, start, limits, policy)
+        fraction = getattr(backend, "cartesian_fraction", 1.)
+        data.update(fraction=fraction, path_complete=fraction>=.999)
         if not path.points:
             raise MotionRejected("MOTION_PLAN_INVALID", "笛卡尔轨迹为空")
         target = check_joints(dict(zip(path.joint_names,path.points[-1].positions)),limits)
@@ -202,7 +204,9 @@ def move_cartesian(backend, xyz, rpy, policy, audit=lambda event: None):
         backend.execute(path,data["duration"])
         data["controller_completed"] = True
         audit({"stage":"completed",**data})
-        return ToolResult.success("控制器报告完整笛卡尔轨迹执行完成",data)
+        message = ("控制器报告完整笛卡尔轨迹执行完成" if data["path_complete"] else
+                   f"控制器报告上升轨迹执行完成（规划覆盖 {fraction:.1%}）")
+        return ToolResult.success(message,data)
     except MotionRejected as exc:
         audit({"stage":"rejected","error_code":exc.code,**data,**exc.data})
         return ToolResult.failure(exc.code,str(exc),{**data,**exc.data})

@@ -2,7 +2,7 @@
 import time
 from types import SimpleNamespace
 import numpy as np
-from core.grasp_geometry import ee_position, preferred_grasp_rotation, rotation_rpy
+from core.grasp_geometry import STOCK_TIP_FROM_EE, ee_position, preferred_grasp_rotation, rotation_rpy
 
 
 class GraspPipeline:
@@ -46,7 +46,7 @@ class GraspPipeline:
             position, depth = gg.translations[i], float(gg.depths[i])
             grasps.append({'rank':i, 'score':float(gg.scores[i]), 'position':position.tolist(),
                 'rotation':r.tolist(), 'rpy':rotation_rpy(r), 'width':float(gg.widths[i]), 'depth':depth,
-                'ee_position':ee_position(position,r,depth,.015575).tolist(),
+                'ee_position':ee_position(position,r,depth,STOCK_TIP_FROM_EE).tolist(),
                 'execution_ready':not no_collision, 'pipeline':'original'})
         return grasps, {'returned':len(grasps), 'pipeline':'original',
                         'elapsed_s':round(time.monotonic()-start,3),

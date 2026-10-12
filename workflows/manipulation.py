@@ -141,13 +141,18 @@ def execute(actions, scene_id=None, return_to_sleep=True, allow_fallback=True):
         strategies.append(strategy)
         message = {"graspnet":"使用 GraspNet pose", "grcnn":"使用 GR-CNN pose",
                    "fallback":"无抓取 pose，使用原版定位坐标和固定姿态兜底"}[debug["mode"]]
+        if debug["mode"] != "fallback":
+            from core.grasp_geometry import STOCK_TIP_FROM_EE
+            tip = [xyz[i]+debug["rotation"][i][0]*STOCK_TIP_FROM_EE for i in range(3)]
+            strategy["tip_position"] = tip
+            message += f" · 末端目标 z={grasp_z*100:.2f} cm，指尖目标 z={tip[2]*100:.2f} cm"
         report("grasp_strategy",strategy,ToolResult.success(message))
         sequence = [
             ("gripper_set", {"position": 0.037}, 0.),
             ("move_arm", dict(x=x, y=y, z=z+0.10, **orientation, grasp_debug=debug), 0.),
             ("move_arm", dict(x=x, y=y, z=grasp_z, cartesian=True), 0.),
-            ("gripper_set", {"position": 0.024}, 0.),
-            ("move_arm", dict(x=x, y=y, z=z+0.08, cartesian=True), 0.),
+            ("gripper_set", {"position": 0.015}, 0.),
+            ("move_arm", dict(x=x, y=y, z=z+0.08, cartesian=True, allow_partial=True), 0.),
         ]
         if target is not None:
             tx, ty, tz = target
@@ -156,7 +161,7 @@ def execute(actions, scene_id=None, return_to_sleep=True, allow_fallback=True):
                 ("move_arm", dict(x=tx, y=ty, z=tz+0.04, cartesian=True), 0.),
                 # Allow the fingers to finish releasing before retreating.
                 ("gripper_set", {"position": 0.037}, 0.5),
-                ("move_arm", dict(x=tx, y=ty, z=tz+0.10, cartesian=True), 0.),
+                ("move_arm", dict(x=tx, y=ty, z=tz+0.10, cartesian=True, allow_partial=True), 0.),
             ]
         for index, (name, args, pause) in enumerate(sequence):
             try:

@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 from scipy.ndimage import gaussian_filter, maximum_filter
 
-from core.grasp_geometry import ee_position, preferred_grasp_rotation, rotation_rpy
+from core.grasp_geometry import STOCK_TIP_FROM_EE, ee_position, preferred_grasp_rotation, rotation_rpy
 from workers.grasp_pipeline import GraspPipeline
 
 INPUT_SIZE = 224
@@ -162,7 +162,7 @@ class GrCNNPipeline(GraspPipeline):
             depth = .01
             grasps.append(dict(score=float(np.clip(q[y,x],0,1)),position=position.tolist(),rotation=rotation.tolist(),
                 rpy=rotation_rpy(rotation),width=width,depth=depth,
-                ee_position=ee_position(position,rotation,depth,.015575).tolist(),
+                ee_position=ee_position(position,rotation,depth,STOCK_TIP_FROM_EE).tolist(),
                 execution_ready=not no_collision,pipeline="grcnn",pixel=[u,v],image_angle=float(angles[y,x])))
         diagnostics.update(peaks=len(peaks),before_collision=len(grasps),roi=list(roi),max_quality=float(np.max(q)),
                            rejected_width=rejected_width,rejected_geometry=rejected_geometry)

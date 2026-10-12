@@ -66,11 +66,8 @@ def _actions(actions):
     return result
 
 
-def execute(actions, scene_id=None, return_to_sleep=True, allow_fallback=True, detection_hints=None):
+def execute(actions, scene_id=None, return_to_sleep=True, allow_fallback=True):
     actions = _actions(actions)  # validate the entire request before any physical command
-    labels = list(dict.fromkeys([a["object"] for a in actions] + [a["target"] for a in actions if a["target"]]))
-    if detection_hints is not None:
-        scene.build_prompt(labels, detection_hints)
     completed, steps = [], []
 
     def step(name, pause=0., **args):
@@ -99,9 +96,9 @@ def execute(actions, scene_id=None, return_to_sleep=True, allow_fallback=True, d
             return settled
         if is_cancelled():
             return ToolResult.failure("TASK_CANCELLED", "任务已中断")
+        labels = list(dict.fromkeys([a["object"] for a in actions] + [a["target"] for a in actions if a["target"]]))
         report("scan_objects", {"labels": labels})
-        options = {"detection_hints": detection_hints} if detection_hints is not None else {}
-        prepared = scene.scan(labels, [a["object"] for a in actions], **options)
+        prepared = scene.scan(labels, [a["object"] for a in actions])
         report("scan_objects", {"labels": labels}, prepared)
         if not prepared.ok:
             return prepared

@@ -60,19 +60,6 @@ python3 main.py
 
 同一场景内物体移动后，旧坐标不能重复用于该物体。多个同名实例、无有效深度、动作失败或取消都会停止后续步骤。场景在新回合、重置、服务关闭或超过 `SCENE_MAX_AGE` 时失效。
 
-agent 的对话 LLM 可根据常识与用户信息给检测增加颜色描述。比如香蕉使用 `banana.yellow banana.yellow fruit.yellow object`；葡萄等颜色不确定时先问用户，确认后再执行原任务。LLM 通过 `detection_hints` 把描述交给 `execute_pick_place` 或 `scan_objects`，程序合并到同一次 DINO 请求，不额外调用视觉 LLM。原物体名继续保留，颜色推测不作为视觉确认。
-
-```json
-{
-  "actions": [{"object": "banana", "target": "bowl"}],
-  "detection_hints": {
-    "banana": ["yellow banana", "yellow fruit", "yellow object"]
-  }
-}
-```
-
-同色目标的宽泛描述会省略，优先使用“颜色＋物体名”。检测返回的名称候选优先于宽泛颜色候选；重复框按已有 IoU 规则合并，再对应回原物体用于分割和抓取。DINO 的置信度阈值仍为 0.25，实际提示词保存在本机场景的 `grounding.json` 中。
-
 有抓取 pose 时取最高分候选，处理 roll 范围后用 MoveIt 求解；没有 pose 时默认恢复定位坐标加 `[0°,50°,0°]` 的原版兜底。`allow_fallback=false` 可明确禁用兜底。原版 GraspNet 模型碰撞、去重、分数和高度过滤继续使用，取消后加的多区域搜索、桌面拟合、STL 扫掠筛选和八候选预检。
 
 模型的接触参考位置按 depth 转换为末端目标。两个模型在统一输出处加一次基座坐标补偿：**x −1.5 cm、z −1.0 cm**，y 和朝向不变；RViz 候选和所选抓取框使用同样的补偿。可通过 `.env` 的 `GRASP_OFFSET_X=-0.015`、`GRASP_OFFSET_Z=-0.010` 调整，单位米；设为 0 可关闭。补偿不改变定位坐标、兜底抓取或放置目标。
